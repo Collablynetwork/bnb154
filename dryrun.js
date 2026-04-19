@@ -10,11 +10,24 @@ function pickFiniteNumber(...values) {
   return undefined;
 }
 
+function pickFirstDefined(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && value !== "") return value;
+  }
+  return undefined;
+}
+
+function valuesForPattern(source, pattern) {
+  return Object.keys(source || {})
+    .filter((key) => pattern.test(key))
+    .map((key) => source[key]);
+}
+
 function normalizeTradeStatus(status) {
   const value = String(status || "OPEN").toUpperCase();
 
   if (value.includes("TARGET ACHIEVED")) return "TARGET ACHIEVED";
-  if (value === "SL1" || value === "SL2" || value === "SL HIT") return "SL HIT";
+  if (/^SL\d+$/.test(value) || value === "SL HIT") return "SL HIT";
   if (value === "DISABLED" || value === "REMOVED") return "DISABLED";
   return "OPEN";
 }
@@ -26,21 +39,29 @@ function uniqueStrings(values) {
 function normalizePosition(position, options = {}) {
   const normalized = { ...position };
   const targetPrice =
-    pickFiniteNumber(normalized.targetPrice, normalized.target2Price, normalized.target1Price) ?? 0;
+    pickFiniteNumber(normalized.targetPrice, ...valuesForPattern(normalized, /^target\d+Price$/)) ?? 0;
   const stopPrice =
-    pickFiniteNumber(normalized.stopPrice, normalized.sl2Price, normalized.sl1Price) ?? 0;
-  const pnlStatus = normalizeTradeStatus(normalized.pnlStatus ?? normalized.pnl2Status);
-  const pnlClosedAt = normalized.pnlClosedAt ?? normalized.pnl2ClosedAt ?? null;
-  const pnlExitPrice = pickFiniteNumber(normalized.pnlExitPrice, normalized.pnl2ExitPrice) ?? null;
-  const pnlPct = round(pickFiniteNumber(normalized.pnlPct, normalized.pnl2PnlPct) ?? 0, 6);
-  const pnlAmount = round(pickFiniteNumber(normalized.pnlAmount, normalized.pnl2PnlAmount) ?? 0, 6);
+    pickFiniteNumber(normalized.stopPrice, ...valuesForPattern(normalized, /^sl\d+Price$/)) ?? 0;
+  const pnlStatus = normalizeTradeStatus(
+    pickFirstDefined(normalized.pnlStatus, ...valuesForPattern(normalized, /^pnl\d+Status$/))
+  );
+  const pnlClosedAt =
+    pickFirstDefined(normalized.pnlClosedAt, ...valuesForPattern(normalized, /^pnl\d+ClosedAt$/)) ??
+    null;
+  const pnlExitPrice =
+    pickFiniteNumber(normalized.pnlExitPrice, ...valuesForPattern(normalized, /^pnl\d+ExitPrice$/)) ??
+    null;
+  const pnlPct = round(
+    pickFiniteNumber(normalized.pnlPct, ...valuesForPattern(normalized, /^pnl\d+PnlPct$/)) ?? 0,
+    6
+  );
+  const pnlAmount = round(
+    pickFiniteNumber(normalized.pnlAmount, ...valuesForPattern(normalized, /^pnl\d+PnlAmount$/)) ?? 0,
+    6
+  );
 
   normalized.targetPrice = targetPrice;
-  normalized.target2Price = targetPrice;
-  normalized.target1Price = null;
   normalized.stopPrice = stopPrice;
-  normalized.sl2Price = stopPrice;
-  normalized.sl1Price = null;
   normalized.tp1 = targetPrice;
 
   normalized.pnlStatus = pnlStatus;
@@ -49,19 +70,11 @@ function normalizePosition(position, options = {}) {
   normalized.pnlPct = pnlPct;
   normalized.pnlAmount = pnlAmount;
 
-  normalized.pnl1Status =
-    normalized.pnl1Status && normalized.pnl1Status !== "OPEN"
-      ? normalized.pnl1Status
-      : "DISABLED";
-  normalized.pnl2Status = pnlStatus;
-  normalized.pnl1ClosedAt = normalized.pnl1ClosedAt ?? null;
-  normalized.pnl2ClosedAt = pnlClosedAt;
-  normalized.pnl1ExitPrice = normalized.pnl1ExitPrice ?? null;
-  normalized.pnl2ExitPrice = pnlExitPrice;
-  normalized.pnl1PnlPct = round(pickFiniteNumber(normalized.pnl1PnlPct) ?? 0, 6);
-  normalized.pnl2PnlPct = pnlPct;
-  normalized.pnl1PnlAmount = round(pickFiniteNumber(normalized.pnl1PnlAmount) ?? 0, 6);
-  normalized.pnl2PnlAmount = pnlAmount;
+  for (const key of Object.keys(normalized)) {
+    if (/^pnl\d+/.test(key) || /^target\d+Price$/.test(key) || /^sl\d+Price$/.test(key)) {
+      delete normalized[key];
+    }
+  }
 
   const existingRealized = round(pickFiniteNumber(normalized.realizedPnl) ?? 0, 6);
   const closed = options.closed || pnlStatus !== "OPEN";
@@ -145,8 +158,8 @@ function createPosition(signal) {
   const notional = Number(config.dryRunNotional || 100);
   const entry = Number(signal.entryPrice ?? signal.entry ?? 0);
   const qty = entry > 0 ? notional / entry : 0;
-  const targetPrice = Number(signal.targetPrice ?? signal.target2Price);
-  const stopPrice = Number(signal.stopPrice ?? signal.sl2Price ?? signal.stopLoss);
+  const targetPrice = pickFiniteNumber(signal.targetPrice, signal.tp1) ?? 0;
+  const stopPrice = pickFiniteNumber(signal.stopPrice, signal.stopLoss, signal.sl) ?? 0;
 
   return normalizePosition({
     signalId: signal.signalId || `${signal.pair}-${signal.side}-${signal.baseTimeframe}-${Date.now()}`,
@@ -162,11 +175,7 @@ function createPosition(signal) {
     quantity: round(qty, 8),
     notional,
     targetPrice,
-    target2Price: targetPrice,
-    target1Price: null,
     stopPrice,
-    sl2Price: stopPrice,
-    sl1Price: null,
     tp1: targetPrice,
     tp2: Number(signal.ignoredTp3),
     tp3: Number(signal.ignoredTp4),
@@ -190,16 +199,6 @@ function createPosition(signal) {
     pnlExitPrice: null,
     pnlPct: 0,
     pnlAmount: 0,
-    pnl1Status: "DISABLED",
-    pnl2Status: "OPEN",
-    pnl1ClosedAt: null,
-    pnl2ClosedAt: null,
-    pnl1ExitPrice: null,
-    pnl2ExitPrice: null,
-    pnl1PnlPct: 0,
-    pnl2PnlPct: 0,
-    pnl1PnlAmount: 0,
-    pnl2PnlAmount: 0,
     blocksNewSignals: true,
     monitoringActive: true,
     status: "OPEN",
@@ -214,7 +213,7 @@ function updatePositionMark(position, mark) {
 }
 
 function isFullyClosed(position) {
-  return normalizeTradeStatus(position.pnlStatus ?? position.pnl2Status) !== "OPEN";
+  return normalizeTradeStatus(position.pnlStatus) !== "OPEN";
 }
 
 function releaseSignalGate(position) {
@@ -239,7 +238,7 @@ function refreshOverallStatus(position) {
 }
 
 function markTradeClosed(position, status, exitPrice) {
-  if (normalizeTradeStatus(position.pnlStatus ?? position.pnl2Status) !== "OPEN") return null;
+  if (normalizeTradeStatus(position.pnlStatus) !== "OPEN") return null;
 
   const now = nowIso();
   const pct = computeSignedPct(position.side, position.entryPrice, exitPrice);
@@ -250,12 +249,6 @@ function markTradeClosed(position, status, exitPrice) {
   position.pnlExitPrice = exitPrice;
   position.pnlPct = round(pct, 6);
   position.pnlAmount = amount;
-
-  position.pnl2Status = status;
-  position.pnl2ClosedAt = now;
-  position.pnl2ExitPrice = exitPrice;
-  position.pnl2PnlPct = position.pnlPct;
-  position.pnl2PnlAmount = amount;
 
   releaseSignalGate(position);
   refreshOverallStatus(position);
@@ -347,7 +340,7 @@ function evaluateTargetsAndStops(priceByPair) {
 
     updatePositionMark(position, mark);
 
-    if (normalizeTradeStatus(position.pnlStatus ?? position.pnl2Status) === "OPEN") {
+    if (normalizeTradeStatus(position.pnlStatus) === "OPEN") {
       const targetHit =
         position.side === "LONG" ? mark >= position.targetPrice : mark <= position.targetPrice;
       const stopHit =
@@ -383,10 +376,10 @@ function getAllTrades() {
 function summarizeTrades(trades) {
   const totalSignals = trades.length;
   const targetCount = trades.filter(
-    (trade) => normalizeTradeStatus(trade.pnlStatus ?? trade.pnl2Status) === "TARGET ACHIEVED"
+    (trade) => normalizeTradeStatus(trade.pnlStatus) === "TARGET ACHIEVED"
   ).length;
   const slCount = trades.filter(
-    (trade) => normalizeTradeStatus(trade.pnlStatus ?? trade.pnl2Status) === "SL HIT"
+    (trade) => normalizeTradeStatus(trade.pnlStatus) === "SL HIT"
   ).length;
   const cumulativeProfitLoss = round(
     trades.reduce((sum, trade) => sum + Number(trade.realizedPnl || trade.pnlAmount || 0), 0),

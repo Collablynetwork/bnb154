@@ -54,16 +54,6 @@ function uniqueStrings(values) {
   return [...new Set((values || []).map((v) => String(v).trim()).filter(Boolean))];
 }
 
-function pctPrice(entry, pct, side, kind) {
-  const value = Number(entry || 0);
-  const move = value * (Number(pct || 0) / 100);
-  const isShort = String(side).toUpperCase() === "SHORT";
-  if (kind === "target") {
-    return isShort ? value - move : value + move;
-  }
-  return isShort ? value + move : value - move;
-}
-
 function adjustSystemValue(value, side, direction) {
   const base = Number(value || 0);
   const adjustPct = direction === "target" ? config.systemTargetAdjustPct : config.systemStopAdjustPct;
@@ -161,10 +151,8 @@ function buildSignalCandidate(matchResult) {
   const ignoredTp3 = Number(matchResult.tp2 ?? generated.ignoredTp3);
   const ignoredTp4 = Number(matchResult.tp3 ?? generated.ignoredTp4);
 
-  const target1Price = pctPrice(entry, config.pnl1TargetPct, side, "target");
-  const sl1Price = pctPrice(entry, config.pnl1StopPct, side, "stop");
-  const target2Price = adjustSystemValue(originalSystemTp1, side, "target");
-  const sl2Price = adjustSystemValue(originalSystemSl, side, "stop");
+  const targetPrice = adjustSystemValue(originalSystemTp1, side, "target");
+  const stopPrice = adjustSystemValue(originalSystemSl, side, "stop");
   const strategySourcePair =
     matchResult.strategySourcePair || matchResult.sourcePair || matchResult.strategy?.pair || "N/A";
   const strategySourceTimeframe =
@@ -182,19 +170,17 @@ function buildSignalCandidate(matchResult) {
     entry,
     entryPrice: entry,
     currentPrice: Number(matchResult.currentPrice ?? currentFeatures.currentClose ?? entry),
-    target1Price,
-    target2Price,
-    sl1Price,
-    sl2Price,
-    tp1: target2Price,
+    targetPrice,
+    stopPrice,
+    tp1: targetPrice,
     tp2: ignoredTp3,
     tp3: ignoredTp4,
     ignoredTp3,
     ignoredTp4,
     originalSystemTp1,
     originalSystemSl,
-    sl: sl2Price,
-    stopLoss: sl2Price,
+    sl: stopPrice,
+    stopLoss: stopPrice,
     baseTimeframe,
     baseTf: baseTimeframe,
     supportTfs,
@@ -332,10 +318,10 @@ async function dispatchTradeUpdates(bot, chatId, updates) {
     const replyTo = position.signalMessageId || position.messageId || null;
 
     let text = "";
-    if (update.type === "TARGET ACHIEVED 1" || update.type === "TARGET ACHIEVED 2") {
-      text = buildTargetHitMessage(position, update.type);
-    } else if (update.type === "SL1" || update.type === "SL2") {
-      text = buildStopHitMessage(position, update.type);
+    if (update.type === "TARGET ACHIEVED") {
+      text = buildTargetHitMessage(position);
+    } else if (update.type === "SL HIT") {
+      text = buildStopHitMessage(position);
     } else {
       continue;
     }

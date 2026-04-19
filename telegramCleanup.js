@@ -1,8 +1,7 @@
-const config = require("./config");
+const COMMAND_MESSAGE_TTL_MS = 30_000;
 
 function cleanupDelayMs() {
-  const delay = Number(config.telegramCleanupDelayMs || 30_000);
-  return Number.isFinite(delay) && delay > 0 ? delay : 30_000;
+  return COMMAND_MESSAGE_TTL_MS;
 }
 
 function deleteTelegramMessageLater(bot, chatId, messageId, delayMs = cleanupDelayMs()) {

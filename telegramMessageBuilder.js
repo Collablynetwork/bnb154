@@ -49,14 +49,14 @@ function buildSignalMessage(candidate) {
     `📚 Support TFs (${supportTfs.length}): ${supportTfs.join(", ") || "N/A"}`,
     `🎯 Score: ${formatScore(candidate.score)}`,
     `💵 Entry Price: ${formatPrice(candidate.entry)}`,
-    `✅ Target (Adjusted TP1): ${formatPrice(candidate.targetPrice ?? candidate.target2Price)}`,
-    `❌ Stop (Adjusted SL): ${formatPrice(candidate.stopPrice ?? candidate.sl2Price)}`,
+    `✅ Target Price: ${formatPrice(candidate.targetPrice)}`,
+    `❌ Stop Price: ${formatPrice(candidate.stopPrice)}`,
     `📌 TP3 (ignored in stats): ${formatPrice(candidate.ignoredTp3)}`,
     `📌 TP4 (ignored in stats): ${formatPrice(candidate.ignoredTp4)}`,
     `⚖️ Risk/Reward: ${formatRatio(candidate.riskReward)}`,
     `🧠 Strategy Source: ${candidate.strategyUsed || candidate.strategySource || "N/A"}`,
     reasons.length ? `✅ Conditions: ${reasons.join(" | ")}` : "✅ Conditions: Matched learned setup",
-    `ℹ️ Performance uses only the adjusted target and adjusted stop. TP3 and TP4 are ignored for performance calculation.`,
+    `ℹ️ Performance uses the target and stop shown above. TP3 and TP4 stay informational only.`,
   ].join("\n");
 }
 
@@ -64,7 +64,7 @@ function buildSignalReplyMarkup(candidate) {
   return {
     inline_keyboard: [[
       {
-        text: "📈 Open on Binance",
+        text: "Open Futures Contract",
         url: buildBinancePairLink(candidate.pair),
       },
     ]],
@@ -80,11 +80,11 @@ function buildScoreRisingMessage({ pair, baseTf, oldScore, newScore, updates = [
   ].filter(Boolean).join("\n");
 }
 
-function buildTargetHitMessage(position, targetType) {
-  const title = "✅ TARGET ACHIEVED";
-  const targetPrice = position.targetPrice ?? position.target2Price ?? position.target1Price;
-  const pnlAmount = position.pnlAmount ?? position.pnl2PnlAmount ?? position.pnl1PnlAmount;
-  const pnlPct = position.pnlPct ?? position.pnl2PnlPct ?? position.pnl1PnlPct;
+function buildTargetHitMessage(position) {
+  const title = "🎯 TARGET ACHIEVED";
+  const targetPrice = position.targetPrice;
+  const pnlAmount = position.pnlAmount;
+  const pnlPct = position.pnlPct;
 
   return [
     title,
@@ -94,15 +94,15 @@ function buildTargetHitMessage(position, targetType) {
     `💵 Entry: ${formatPrice(position.entryPrice || position.entry)}`,
     `🏁 Exit Target: ${formatPrice(targetPrice)}`,
     `📌 Current Mark: ${formatPrice(position.currentMark)}`,
-    `💹 Model PNL: ${formatPrice(pnlAmount)} (${formatPct(pnlPct)})`,
+    `💹 PNL: ${formatPrice(pnlAmount)} (${formatPct(pnlPct)})`,
   ].join("\n");
 }
 
-function buildStopHitMessage(position, stopType) {
-  const title = "❌ SL HIT";
-  const stopPrice = position.stopPrice ?? position.sl2Price ?? position.sl1Price;
-  const pnlAmount = position.pnlAmount ?? position.pnl2PnlAmount ?? position.pnl1PnlAmount;
-  const pnlPct = position.pnlPct ?? position.pnl2PnlPct ?? position.pnl1PnlPct;
+function buildStopHitMessage(position) {
+  const title = "❌ STOP LOSS HIT";
+  const stopPrice = position.stopPrice;
+  const pnlAmount = position.pnlAmount;
+  const pnlPct = position.pnlPct;
 
   return [
     title,
@@ -112,7 +112,7 @@ function buildStopHitMessage(position, stopType) {
     `💵 Entry: ${formatPrice(position.entryPrice || position.entry)}`,
     `🧯 Stop Price: ${formatPrice(stopPrice)}`,
     `📌 Exit Mark: ${formatPrice(position.currentMark)}`,
-    `💥 Model PNL: ${formatPrice(pnlAmount)} (${formatPct(pnlPct)})`,
+    `💥 PNL: ${formatPrice(pnlAmount)} (${formatPct(pnlPct)})`,
   ].join("\n");
 }
 

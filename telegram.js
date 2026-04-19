@@ -5,9 +5,27 @@ const {
   loadStrategiesIndex,
   getStrategyByPair,
   rebuildStrategiesIndexFromFiles,
+  getStrategyRetentionDays,
+  setStrategyRetentionDays,
+  clearStrategiesForPair,
+  clearAllStrategies,
 } = require("./strategyLearner");
 const dryrun = require("./dryrun");
 const { sendTemporaryMessage, cleanupIncomingMessage } = require("./telegramCleanup");
+
+const MENU_ACTIONS = {
+  pairs: "Watched Pairs",
+  scan: "Run Market Scan",
+  dryrun: "Trade Overview",
+  pnl: "PNL Dashboard",
+  signals: "Live Signals",
+  closed: "Closed Trades",
+  dryrunlong: "Long Dry Run",
+  dryrunshort: "Short Dry Run",
+  strategies: "Strategy Dashboard",
+  strategylist: "Strategy List",
+  help: "Help Center",
+};
 
 const COMMANDS = [
   { command: "start", description: "Open menu" },
@@ -17,9 +35,7 @@ const COMMANDS = [
   { command: "removepair", description: "Remove pair. Example: /removepair BTCUSDT" },
   { command: "scan", description: "Run scan now" },
   { command: "dryrun", description: "Show dry-run summary" },
-  { command: "pnl", description: "Show combined PNL summary" },
-  { command: "pnl1", description: "Show PNL1 stats" },
-  { command: "pnl2", description: "Show PNL2 stats" },
+  { command: "pnl", description: "Show PNL summary" },
   { command: "signals", description: "Show active monitored signals" },
   { command: "closed", description: "Show fully closed trades" },
   { command: "dryrunlong", description: "Open dry-run LONG tests" },
@@ -27,6 +43,9 @@ const COMMANDS = [
   { command: "strategies", description: "Show saved strategy count" },
   { command: "strategylist", description: "List saved strategies" },
   { command: "strategy", description: "Show detailed strategy" },
+  { command: "recentstrategyday", description: "Set strategy retention days" },
+  { command: "clearstrategy", description: "Remove saved strategies for a pair" },
+  { command: "clearallstrategy", description: "Remove all saved strategies" },
   { command: "rebuildstrategies", description: "Rebuild strategy index from files" },
 ];
 
@@ -52,10 +71,74 @@ async function setupCommands(bot) {
   }
 }
 
-function commandRegex(command, withArg = false) {
-  return withArg
-    ? new RegExp(`^/${command}(?:@\\w+)?\\s+(.+)$`, "i")
-    : new RegExp(`^/${command}(?:@\\w+)?$`, "i");
+function escapeRegex(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function commandRegex(command, withArg = false, aliases = []) {
+  const patterns = [`/${command}(?:@\\w+)?`, ...aliases.map((alias) => escapeRegex(alias))];
+  const source = `^(?:${patterns.join("|")})${withArg ? "\\s+(.+)$" : "$"}`;
+  return new RegExp(source, "i");
+}
+
+function menuCommandRegex(command, withArg = false) {
+  const alias = MENU_ACTIONS[command];
+  return commandRegex(command, withArg, alias ? [alias] : []);
+}
+
+function isManagedCommandMessage(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return false;
+  if (trimmed.startsWith("/")) return true;
+  return Object.values(MENU_ACTIONS).some((label) => label.toLowerCase() === trimmed.toLowerCase());
+}
+
+function cleanupManagedMessage(bot, msg) {
+  if (isManagedCommandMessage(msg?.text)) {
+    cleanupIncomingMessage(bot, msg);
+  }
+}
+
+function buildPnlSummarySection(summary) {
+  return formatModelSummary("PNL", summary);
+}
+
+function buildPnlDashboardText(summary) {
+  return [
+    "💹 PNL Dashboard",
+    `Blocking Signals: ${summary.blockingSignals}`,
+    `Background Monitoring: ${summary.backgroundMonitoring}`,
+    `Open Unrealized: ${summary.openUnrealized}`,
+    `Realized: ${summary.realized}`,
+    "",
+    buildPnlSummarySection(summary.pnl),
+  ].join("\n");
+}
+
+function buildDryrunOverviewText(summary) {
+  return [
+    "🧪 Dry-run Overview",
+    `Open/Monitoring Trades: ${summary.openCount}`,
+    `Fully Closed Trades: ${summary.closedCount}`,
+    `Blocking Signals: ${summary.blockingSignals}`,
+    `Background Monitoring: ${summary.backgroundMonitoring}`,
+    `Open Unrealized PNL: ${summary.openUnrealized}`,
+    `Realized PNL: ${summary.realized}`,
+    "",
+    buildPnlSummarySection(summary.pnl),
+  ].join("\n");
+}
+
+function buildSignalStatusLabel(position) {
+  return position.pnlStatus || "OPEN";
+}
+
+function formatRetentionSummary() {
+  return `Strategy retention days: ${getStrategyRetentionDays()}`;
+}
+
+function buildActionRow(...keys) {
+  return keys.map((key) => ({ text: MENU_ACTIONS[key] }));
 }
 
 function splitLongMessage(text, chunkSize = 3500) {
@@ -80,12 +163,14 @@ function buildHelpText() {
   return [
     "🤖 Binance Futures Pump Scanner",
     "",
+    "Use the menu buttons below or the slash commands here:",
+    "",
     "Rules active:",
     "• Only pairs present in pair.js are scanned.",
     `• New alerts only when score > ${config.notifyMinScore}.`,
     `• Base timeframe allowed: ${config.allowedBaseTimeframes.join(", ")}.`,
     `• Minimum support confirmations: ${config.minSupportCount} including self TF.`,
-    "• Only one blocking signal at a time. A new signal is allowed after PNL1 or PNL2 closes, while the other model keeps monitoring.",
+    "• Only one blocking signal at a time. A new signal is allowed after the active trade closes.",
     "",
     "/start - open menu",
     "/help - show commands",
@@ -93,10 +178,8 @@ function buildHelpText() {
     "/addpair BTCUSDT - add pair if it exists in pair.js",
     "/removepair BTCUSDT - remove pair from active scan list",
     "/scan - run scan now",
-    "/dryrun - dry-run summary",
-    "/pnl - combined PNL summary",
-    "/pnl1 - PNL1 stats",
-    "/pnl2 - PNL2 stats",
+    "/dryrun - dry-run overview",
+    "/pnl - PNL dashboard",
     "/signals - show active monitored signals",
     "/closed - show fully closed trades",
     "/dryrunlong - create dry-run LONG tests",
@@ -104,6 +187,9 @@ function buildHelpText() {
     "/strategies - show saved strategy count",
     "/strategylist - list saved strategies",
     "/strategy BTCUSDT - show saved strategy in detail",
+    "/recentstrategyday 3 - keep strategies for 3 days",
+    "/clearstrategy BTCUSDT - remove saved strategies for one pair",
+    "/clearallstrategy - remove all saved strategies",
     "/rebuildstrategies - rebuild strategy index from files",
   ].join("\n");
 }
@@ -112,16 +198,17 @@ function buildMainMenu() {
   return {
     reply_markup: {
       keyboard: [
-        ["/pairs", "/scan"],
-        ["/dryrun", "/pnl"],
-        ["/pnl1", "/pnl2"],
-        ["/signals", "/closed"],
-        ["/dryrunlong", "/dryrunshort"],
-        ["/strategies", "/strategylist"],
-        ["/help"],
+        buildActionRow("scan", "signals"),
+        buildActionRow("pnl", "dryrun"),
+        buildActionRow("closed", "pairs"),
+        buildActionRow("dryrunlong", "dryrunshort"),
+        buildActionRow("strategies", "strategylist"),
+        buildActionRow("help"),
       ],
       resize_keyboard: true,
       one_time_keyboard: false,
+      is_persistent: true,
+      input_field_placeholder: "Choose an action or type a slash command",
     },
   };
 }
@@ -218,7 +305,7 @@ function summarizeDryrunInsert(results, side) {
   }
 
   const lines = added.slice(0, 30).map(
-    (c) => `${c.pair} | ${c.baseTimeframe} | score ${c.score} | pnl1=${c.pnl1Status} | pnl2=${c.pnl2Status}`
+    (c) => `${c.pair} | ${c.baseTimeframe} | score ${c.score} | pnl=${buildSignalStatusLabel(c)}`
   );
 
   return [
@@ -233,16 +320,20 @@ function formatModelSummary(label, summary) {
   return [
     `${label}`,
     `Total Signals: ${summary.totalSignals}`,
-    `${label === "PNL1" ? "Target Achieved 1" : "Target Achieved 2"} Count: ${summary.targetCount}`,
-    `${label === "PNL1" ? "SL1" : "SL2"} Count: ${summary.slCount}`,
-    `${label} Win Rate: ${summary.winRate}%`,
-    `${label} Loss Rate: ${summary.lossRate}%`,
-    `${label} Cumulative P/L: ${summary.cumulativeProfitLoss}`,
+    `Targets Achieved: ${summary.targetCount}`,
+    `Stop Loss Hits: ${summary.slCount}`,
+    `Win Rate: ${summary.winRate}%`,
+    `Loss Rate: ${summary.lossRate}%`,
+    `Cumulative PNL: ${summary.cumulativeProfitLoss}`,
   ].join("\n");
 }
 
 function registerHandlers(bot, callbacks) {
   if (!bot) return;
+
+  bot.on("message", (msg) => {
+    cleanupManagedMessage(bot, msg);
+  });
 
   bot.onText(commandRegex("start"), async (msg) => {
     cleanupIncomingMessage(bot, msg);
@@ -253,12 +344,12 @@ function registerHandlers(bot, callbacks) {
     );
   });
 
-  bot.onText(commandRegex("help"), async (msg) => {
+  bot.onText(menuCommandRegex("help"), async (msg) => {
     cleanupIncomingMessage(bot, msg);
     await sendTemporaryMessage(bot, msg.chat.id, buildHelpText(), buildMainMenu());
   });
 
-  bot.onText(commandRegex("pairs"), async (msg) => {
+  bot.onText(menuCommandRegex("pairs"), async (msg) => {
     cleanupIncomingMessage(bot, msg);
     const pairs = getWatchedPairs();
     await sendTemporaryMessage(bot, 
@@ -306,7 +397,7 @@ function registerHandlers(bot, callbacks) {
     await sendTemporaryMessage(bot, msg.chat.id, `🗑 Removed ${pair}`, buildMainMenu());
   });
 
-  bot.onText(commandRegex("scan"), async (msg) => {
+  bot.onText(menuCommandRegex("scan"), async (msg) => {
     cleanupIncomingMessage(bot, msg);
     await sendTemporaryMessage(bot, msg.chat.id, "🔎 Running manual scan...");
     const summary = await callbacks.runScan({
@@ -327,61 +418,19 @@ function registerHandlers(bot, callbacks) {
     await sendTemporaryMessage(bot, msg.chat.id, text, buildMainMenu());
   });
 
-  bot.onText(commandRegex("dryrun"), async (msg) => {
+  bot.onText(menuCommandRegex("dryrun"), async (msg) => {
     cleanupIncomingMessage(bot, msg);
     const summary = dryrun.pnlSummary();
-    await sendTemporaryMessage(bot, 
-      msg.chat.id,
-      [
-        "🧪 Dry-run Summary",
-        `Open/Monitoring Trades: ${summary.openCount}`,
-        `Fully Closed Trades: ${summary.closedCount}`,
-        `Blocking Signals: ${summary.blockingSignals}`,
-        `Background Monitoring: ${summary.backgroundMonitoring}`,
-        `Open Unrealized PNL: ${summary.openUnrealized}`,
-        `Combined Realized PNL: ${summary.realized}`,
-        "",
-        formatModelSummary("PNL1", summary.pnl1),
-        "",
-        formatModelSummary("PNL2", summary.pnl2),
-      ].join("\n"),
-      buildMainMenu()
-    );
+    await sendTemporaryMessage(bot, msg.chat.id, buildDryrunOverviewText(summary), buildMainMenu());
   });
 
-  bot.onText(commandRegex("pnl"), async (msg) => {
+  bot.onText(menuCommandRegex("pnl"), async (msg) => {
     cleanupIncomingMessage(bot, msg);
     const summary = dryrun.pnlSummary();
-    await sendTemporaryMessage(bot, 
-      msg.chat.id,
-      [
-        "💹 Combined PNL Summary",
-        `Blocking Signals: ${summary.blockingSignals}`,
-        `Background Monitoring: ${summary.backgroundMonitoring}`,
-        `Open Unrealized: ${summary.openUnrealized}`,
-        `Combined Realized: ${summary.realized}`,
-        "",
-        formatModelSummary("PNL1", summary.pnl1),
-        "",
-        formatModelSummary("PNL2", summary.pnl2),
-      ].join("\n"),
-      buildMainMenu()
-    );
+    await sendTemporaryMessage(bot, msg.chat.id, buildPnlDashboardText(summary), buildMainMenu());
   });
 
-  bot.onText(commandRegex("pnl1"), async (msg) => {
-    cleanupIncomingMessage(bot, msg);
-    const summary = dryrun.pnlModelSummary("pnl1");
-    await sendTemporaryMessage(bot, msg.chat.id, `📊 PNL1 Stats\n${formatModelSummary("PNL1", summary)}`, buildMainMenu());
-  });
-
-  bot.onText(commandRegex("pnl2"), async (msg) => {
-    cleanupIncomingMessage(bot, msg);
-    const summary = dryrun.pnlModelSummary("pnl2");
-    await sendTemporaryMessage(bot, msg.chat.id, `📊 PNL2 Stats\n${formatModelSummary("PNL2", summary)}`, buildMainMenu());
-  });
-
-  bot.onText(commandRegex("dryrunlong"), async (msg) => {
+  bot.onText(menuCommandRegex("dryrunlong"), async (msg) => {
     cleanupIncomingMessage(bot, msg);
     await sendTemporaryMessage(bot, msg.chat.id, "🧪 Building LONG dry-run tests...");
     const summary = await callbacks.runScan({
@@ -400,7 +449,7 @@ function registerHandlers(bot, callbacks) {
     );
   });
 
-  bot.onText(commandRegex("dryrunshort"), async (msg) => {
+  bot.onText(menuCommandRegex("dryrunshort"), async (msg) => {
     cleanupIncomingMessage(bot, msg);
     await sendTemporaryMessage(bot, msg.chat.id, "🧪 Building SHORT dry-run tests...");
     const summary = await callbacks.runScan({
@@ -419,7 +468,7 @@ function registerHandlers(bot, callbacks) {
     );
   });
 
-  bot.onText(commandRegex("signals"), async (msg) => {
+  bot.onText(menuCommandRegex("signals"), async (msg) => {
     cleanupIncomingMessage(bot, msg);
     const open = dryrun.loadOpenPositions();
     if (!open.length) {
@@ -431,14 +480,14 @@ function registerHandlers(bot, callbacks) {
       .slice(0, 20)
       .map(
         (p) =>
-          `${p.pair} ${p.side} | ${p.baseTimeframe} | gate=${p.blocksNewSignals ? "BLOCKED" : "FREE"} | pnl1=${p.pnl1Status} | pnl2=${p.pnl2Status} | mark=${p.currentMark}`
+          `${p.pair} ${p.side} | ${p.baseTimeframe} | gate=${p.blocksNewSignals ? "BLOCKED" : "FREE"} | pnl=${buildSignalStatusLabel(p)} | mark=${p.currentMark}`
       )
       .join("\n");
 
     await sendTemporaryMessage(bot, msg.chat.id, `📡 Monitored Trades\n${text}`, buildMainMenu());
   });
 
-  bot.onText(commandRegex("closed"), async (msg) => {
+  bot.onText(menuCommandRegex("closed"), async (msg) => {
     cleanupIncomingMessage(bot, msg);
     const closed = dryrun.loadClosedTrades().slice(-20).reverse();
     if (!closed.length) {
@@ -449,24 +498,27 @@ function registerHandlers(bot, callbacks) {
     const text = closed
       .map(
         (p) =>
-          `${p.pair} ${p.side} | pnl1=${p.pnl1Status} | pnl2=${p.pnl2Status} | realized=${p.realizedPnl}`
+          `${p.pair} ${p.side} | pnl=${buildSignalStatusLabel(p)} | realized=${p.realizedPnl}`
       )
       .join("\n");
 
     await sendTemporaryMessage(bot, msg.chat.id, `📦 Fully Closed Trades\n${text}`, buildMainMenu());
   });
 
-  bot.onText(commandRegex("strategies"), async (msg) => {
+  bot.onText(menuCommandRegex("strategies"), async (msg) => {
     cleanupIncomingMessage(bot, msg);
     const index = loadStrategiesIndex();
     await sendTemporaryMessage(bot, 
       msg.chat.id,
-      `🧠 Saved learned strategies: ${index.length}`,
+      [
+        `🧠 Saved learned strategies: ${index.length}`,
+        formatRetentionSummary(),
+      ].join("\n"),
       buildMainMenu()
     );
   });
 
-  bot.onText(commandRegex("strategylist"), async (msg) => {
+  bot.onText(menuCommandRegex("strategylist"), async (msg) => {
     cleanupIncomingMessage(bot, msg);
     const index = loadStrategiesIndex().slice(0, 100);
 
@@ -505,12 +557,110 @@ function registerHandlers(bot, callbacks) {
     }
   });
 
+  bot.onText(commandRegex("recentstrategyday"), async (msg) => {
+    cleanupIncomingMessage(bot, msg);
+    await sendTemporaryMessage(
+      bot,
+      msg.chat.id,
+      [
+        formatRetentionSummary(),
+        "Set it like: /recentstrategyday 3",
+      ].join("\n"),
+      buildMainMenu()
+    );
+  });
+
+  bot.onText(commandRegex("recentstrategyday", true), async (msg, match) => {
+    cleanupIncomingMessage(bot, msg);
+    const days = Number(String(match[1] || "").trim());
+
+    if (!Number.isFinite(days) || days <= 0) {
+      await sendTemporaryMessage(
+        bot,
+        msg.chat.id,
+        "Send like: /recentstrategyday 3",
+        buildMainMenu()
+      );
+      return;
+    }
+
+    const result = setStrategyRetentionDays(days);
+    await sendTemporaryMessage(
+      bot,
+      msg.chat.id,
+      [
+        "🗓 Strategy retention updated",
+        `Keep recent days: ${result.keepRecentDays}`,
+        `Remaining strategies: ${result.remainingCount}`,
+        `Removed strategies: ${result.removedCount}`,
+      ].join("\n"),
+      buildMainMenu()
+    );
+  });
+
+  bot.onText(commandRegex("clearstrategy"), async (msg) => {
+    cleanupIncomingMessage(bot, msg);
+    await sendTemporaryMessage(
+      bot,
+      msg.chat.id,
+      "Send like: /clearstrategy BTCUSDT",
+      buildMainMenu()
+    );
+  });
+
+  bot.onText(commandRegex("clearstrategy", true), async (msg, match) => {
+    cleanupIncomingMessage(bot, msg);
+    const pair = String(match[1] || "").trim().toUpperCase();
+
+    if (!pair) {
+      await sendTemporaryMessage(
+        bot,
+        msg.chat.id,
+        "Send like: /clearstrategy BTCUSDT",
+        buildMainMenu()
+      );
+      return;
+    }
+
+    const result = clearStrategiesForPair(pair);
+    await sendTemporaryMessage(
+      bot,
+      msg.chat.id,
+      [
+        `🧹 Strategy cleanup for ${result.pair || pair}`,
+        `Removed strategies: ${result.removedCount}`,
+        `Remaining strategies: ${result.remainingCount}`,
+      ].join("\n"),
+      buildMainMenu()
+    );
+  });
+
+  bot.onText(commandRegex("clearallstrategy"), async (msg) => {
+    cleanupIncomingMessage(bot, msg);
+    const result = clearAllStrategies();
+    await sendTemporaryMessage(
+      bot,
+      msg.chat.id,
+      [
+        "🧹 All strategies cleared",
+        `Removed strategies: ${result.removedCount}`,
+        `Remaining strategies: ${result.remainingCount}`,
+      ].join("\n"),
+      buildMainMenu()
+    );
+  });
+
   bot.onText(commandRegex("rebuildstrategies"), async (msg) => {
     cleanupIncomingMessage(bot, msg);
     const rebuilt = rebuildStrategiesIndexFromFiles();
     await sendTemporaryMessage(bot, 
       msg.chat.id,
-      `♻️ Strategy index rebuilt.\nTotal strategies indexed: ${rebuilt.length}`,
+      [
+        "♻️ Strategy index rebuilt",
+        `Total strategies indexed: ${rebuilt.length}`,
+        `Removed old strategies: ${rebuilt.removedFiles?.length || 0}`,
+        `Retention days: ${rebuilt.retentionDays ?? getStrategyRetentionDays()}`,
+      ].join("\n"),
       buildMainMenu()
     );
   });
