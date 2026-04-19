@@ -1,5 +1,5 @@
 Binance Futures Scanner Rules Update - Smoke Test Report
-Date: 2026-04-16
+Date: 2026-04-19
 
 Checks performed:
 1. Syntax validation passed for:
@@ -15,20 +15,18 @@ Checks performed:
    - strict base timeframe filter (only 1m, 5m)
    - minimum 3 support timeframes including self
    - score > 80 filter for signal generation
-   - adjusted Target 2 / SL2 generation from system TP1 and SL
-   - fixed PNL1 model generation (+0.2% / -0.2%)
+   - adjusted target / stop generation from system TP1 and SL
    - one blocking signal at a time
-   - gate release after PNL1 or PNL2 closes
-   - background monitoring continues for the other PNL model
-   - separate PNL1 / PNL2 stats updates
-   - full trade closure after both models settle
+   - gate release only after the active trade closes
+   - single-model trade stats updates
+   - full trade closure after target or stop is hit
+   - strategy retention cleanup and manual clear commands
 
 3. Smoke test outcome snapshot:
-   - PNL1 target hit was detected correctly
-   - new signal opened after first model closure
-   - PNL2 target hit was detected correctly while previous monitoring completed
-   - stats separated correctly for PNL1 and PNL2
+   - adjusted target hit was detected correctly
+   - adjusted stop hit was detected correctly
+   - new signal opened only after the previous trade closed
+   - stats updated correctly for the single active trade model
 
 Note:
-- Runtime smoke test inside this container used a temporary local dotenv stub only because npm packages are not installed in this environment.
-- The packaged project does not include that stub. Use `npm install` before running locally.
+- Runtime smoke test uses isolated temporary storage so live bot data is not modified.

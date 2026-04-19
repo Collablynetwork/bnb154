@@ -9,6 +9,7 @@ const {
   learnAndPersist,
   loadStrategies,
   rebuildStrategiesIndexFromFiles,
+  getStrategyRetentionDays,
 } = require("./strategyLearner");
 const { matchStrategiesForPair } = require("./similarity");
 const signalEngine = require("./signals");
@@ -181,9 +182,9 @@ async function buildFeatureStoreForPairs(pairs) {
   return featureStore;
 }
 
-function recentEventsOnly(events) {
-  const threeDaysAgo = Date.now() - 3 * 24 * 60 * 60 * 1000;
-  return events.filter((e) => new Date(e.timestamp).getTime() >= threeDaysAgo);
+function recentEventsOnly(events, retentionDays = getStrategyRetentionDays()) {
+  const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  return events.filter((e) => new Date(e.timestamp).getTime() >= cutoffMs);
 }
 
 function extractRegimeSupport(tfMap, direction) {
@@ -355,7 +356,8 @@ async function runScan(options = {}) {
 
     const featureStore = await buildFeatureStoreForPairs(scanPairs);
 
-    let recentLeaders = recentEventsOnly(findRecentPumpLeaders(featureStore));
+    const retentionDays = getStrategyRetentionDays();
+    let recentLeaders = recentEventsOnly(findRecentPumpLeaders(featureStore), retentionDays);
     recentLeaders = recentLeaders.map((event) => ({
       ...event,
       regimeSupportScore: extractRegimeSupport(featureStore[event.pair], event.direction),
@@ -466,7 +468,12 @@ telegram.registerHandlers(bot, { runScan });
 
 async function bootstrap() {
   if (typeof rebuildStrategiesIndexFromFiles === "function") {
-    rebuildStrategiesIndexFromFiles();
+    const rebuilt = rebuildStrategiesIndexFromFiles();
+    console.log("Strategy retention cleanup:", {
+      retentionDays: rebuilt.retentionDays,
+      keptStrategies: rebuilt.length,
+      removedStrategies: rebuilt.removedFiles.length,
+    });
   } else {
     console.warn("rebuildStrategiesIndexFromFiles export missing, skipping index rebuild.");
   }

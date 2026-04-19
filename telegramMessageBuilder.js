@@ -49,16 +49,14 @@ function buildSignalMessage(candidate) {
     `📚 Support TFs (${supportTfs.length}): ${supportTfs.join(", ") || "N/A"}`,
     `🎯 Score: ${formatScore(candidate.score)}`,
     `💵 Entry Price: ${formatPrice(candidate.entry)}`,
-    `✅ Target 1 (0.2%): ${formatPrice(candidate.target1Price)}`,
-    `✅ Target 2 (Adjusted TP1): ${formatPrice(candidate.target2Price)}`,
-    `❌ SL1 (0.2%): ${formatPrice(candidate.sl1Price)}`,
-    `❌ SL2 (Adjusted SL): ${formatPrice(candidate.sl2Price)}`,
+    `✅ Target (Adjusted TP1): ${formatPrice(candidate.targetPrice ?? candidate.target2Price)}`,
+    `❌ Stop (Adjusted SL): ${formatPrice(candidate.stopPrice ?? candidate.sl2Price)}`,
     `📌 TP3 (ignored in stats): ${formatPrice(candidate.ignoredTp3)}`,
     `📌 TP4 (ignored in stats): ${formatPrice(candidate.ignoredTp4)}`,
     `⚖️ Risk/Reward: ${formatRatio(candidate.riskReward)}`,
     `🧠 Strategy Source: ${candidate.strategyUsed || candidate.strategySource || "N/A"}`,
     reasons.length ? `✅ Conditions: ${reasons.join(" | ")}` : "✅ Conditions: Matched learned setup",
-    `ℹ️ Performance uses only Target 1, Target 2, SL1, and SL2. TP3 and TP4 are ignored for performance calculation.`,
+    `ℹ️ Performance uses only the adjusted target and adjusted stop. TP3 and TP4 are ignored for performance calculation.`,
   ].join("\n");
 }
 
@@ -83,11 +81,10 @@ function buildScoreRisingMessage({ pair, baseTf, oldScore, newScore, updates = [
 }
 
 function buildTargetHitMessage(position, targetType) {
-  const isTwo = String(targetType).toUpperCase().includes("2");
-  const title = isTwo ? "✅ TARGET ACHIEVED 2" : "✅ TARGET ACHIEVED 1";
-  const targetPrice = isTwo ? position.target2Price : position.target1Price;
-  const pnlAmount = isTwo ? position.pnl2PnlAmount : position.pnl1PnlAmount;
-  const pnlPct = isTwo ? position.pnl2PnlPct : position.pnl1PnlPct;
+  const title = "✅ TARGET ACHIEVED";
+  const targetPrice = position.targetPrice ?? position.target2Price ?? position.target1Price;
+  const pnlAmount = position.pnlAmount ?? position.pnl2PnlAmount ?? position.pnl1PnlAmount;
+  const pnlPct = position.pnlPct ?? position.pnl2PnlPct ?? position.pnl1PnlPct;
 
   return [
     title,
@@ -102,11 +99,10 @@ function buildTargetHitMessage(position, targetType) {
 }
 
 function buildStopHitMessage(position, stopType) {
-  const isTwo = String(stopType).toUpperCase().includes("2");
-  const title = isTwo ? "❌ SL2 HIT" : "❌ SL1 HIT";
-  const stopPrice = isTwo ? position.sl2Price : position.sl1Price;
-  const pnlAmount = isTwo ? position.pnl2PnlAmount : position.pnl1PnlAmount;
-  const pnlPct = isTwo ? position.pnl2PnlPct : position.pnl1PnlPct;
+  const title = "❌ SL HIT";
+  const stopPrice = position.stopPrice ?? position.sl2Price ?? position.sl1Price;
+  const pnlAmount = position.pnlAmount ?? position.pnl2PnlAmount ?? position.pnl1PnlAmount;
+  const pnlPct = position.pnlPct ?? position.pnl2PnlPct ?? position.pnl1PnlPct;
 
   return [
     title,
