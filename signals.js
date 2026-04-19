@@ -8,7 +8,14 @@ const {
   buildScoreRisingMessage,
   buildTargetHitMessage,
   buildStopHitMessage,
+  buildForceClosedMessage,
 } = require("./telegramMessageBuilder");
+
+const INTERNAL_SIGNAL_HISTORY_DEFAULT = { events: [], lastByPair: {} };
+const INTERNAL_SIGNAL_EVENT_LIMIT = 100;
+const REVERSE_MAJORITY_WINDOW = 3;
+const REVERSE_MAJORITY_MIN = 2;
+const BREADTH_REVERSAL_WINDOW = 5;
 
 function getBand(score) {
   const value = Number(score || 0);
@@ -54,6 +61,10 @@ function uniqueStrings(values) {
   return [...new Set((values || []).map((v) => String(v).trim()).filter(Boolean))];
 }
 
+function oppositeSide(side) {
+  return String(side || "").toUpperCase() === "SHORT" ? "LONG" : "SHORT";
+}
+
 function adjustSystemValue(value, side, direction) {
   const base = Number(value || 0);
   const adjustPct = direction === "target" ? config.systemTargetAdjustPct : config.systemStopAdjustPct;
@@ -72,11 +83,7 @@ function chooseStopAndTargets(side, entry, currentFeatures = {}) {
   const minRisk = Math.max(entry * 0.003, atr * 1.1, entry * 0.0015);
   const longSupport = Number(currentFeatures.support);
   const shortResistance = Number(currentFeatures.resistance);
-  const recentHigh = Number(currentFeatures.recentHigh20);
-  const recentLow = Number(currentFeatures.recentLow20);
-
   let sl;
-  let tp4;
 
   if (side === "LONG") {
     const stopCandidate =
@@ -85,15 +92,9 @@ function chooseStopAndTargets(side, entry, currentFeatures = {}) {
         : entry - minRisk;
     sl = Math.min(stopCandidate, entry - Math.max(minRisk * 0.5, entry * 0.001));
     const risk = Math.max(entry - sl, minRisk);
-    const resistanceTarget =
-      Number.isFinite(shortResistance) && shortResistance > entry ? shortResistance : null;
-    tp4 = Math.max(entry + risk * 2.5, resistanceTarget || 0, entry + minRisk * 2.5);
     return {
       systemTp1: entry + risk,
-      ignoredTp3: entry + risk * 1.75,
-      ignoredTp4: tp4,
       systemSl: sl,
-      riskReward: risk > 0 ? (tp4 - entry) / risk : null,
     };
   }
 
@@ -103,19 +104,10 @@ function chooseStopAndTargets(side, entry, currentFeatures = {}) {
       : entry + minRisk;
   sl = Math.max(stopCandidate, entry + Math.max(minRisk * 0.5, entry * 0.001));
   const risk = Math.max(sl - entry, minRisk);
-  const supportTarget = Number.isFinite(longSupport) && longSupport < entry ? longSupport : null;
-  tp4 = Math.min(
-    entry - risk * 2.5,
-    supportTarget || entry - minRisk * 2.5,
-    Number.isFinite(recentLow) ? recentLow : entry - minRisk * 2.5
-  );
 
   return {
     systemTp1: entry - risk,
-    ignoredTp3: entry - risk * 1.75,
-    ignoredTp4: tp4,
     systemSl: sl,
-    riskReward: risk > 0 ? (entry - tp4) / risk : null,
   };
 }
 
@@ -148,11 +140,10 @@ function buildSignalCandidate(matchResult) {
   const generated = chooseStopAndTargets(side, entry, currentFeatures);
   const originalSystemTp1 = Number(matchResult.tp1 ?? generated.systemTp1);
   const originalSystemSl = Number(matchResult.sl ?? matchResult.stopLoss ?? generated.systemSl);
-  const ignoredTp3 = Number(matchResult.tp2 ?? generated.ignoredTp3);
-  const ignoredTp4 = Number(matchResult.tp3 ?? generated.ignoredTp4);
-
   const targetPrice = adjustSystemValue(originalSystemTp1, side, "target");
   const stopPrice = adjustSystemValue(originalSystemSl, side, "stop");
+  const riskDistance = Math.abs(entry - stopPrice);
+  const rewardDistance = Math.abs(targetPrice - entry);
   const strategySourcePair =
     matchResult.strategySourcePair || matchResult.sourcePair || matchResult.strategy?.pair || "N/A";
   const strategySourceTimeframe =
@@ -173,10 +164,6 @@ function buildSignalCandidate(matchResult) {
     targetPrice,
     stopPrice,
     tp1: targetPrice,
-    tp2: ignoredTp3,
-    tp3: ignoredTp4,
-    ignoredTp3,
-    ignoredTp4,
     originalSystemTp1,
     originalSystemSl,
     sl: stopPrice,
@@ -191,7 +178,9 @@ function buildSignalCandidate(matchResult) {
     strategySource: strategyUsed,
     strategyUsed,
     similarityScore: Number(matchResult.similarityScore || score),
-    riskReward: Number(matchResult.riskReward ?? generated.riskReward),
+    riskReward:
+      Number(matchResult.riskReward) ||
+      (riskDistance > 0 ? Number((rewardDistance / riskDistance).toFixed(4)) : null),
     regimeSupportScore: matchResult.regimeSupportScore ?? null,
   };
 }
@@ -241,14 +230,160 @@ function dedupeCandidates(candidates) {
   return [...byKey.values()].sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
 }
 
-async function dispatchSignals(bot, chatId, candidates) {
+function prioritizeCandidates(candidates, prioritySignalKeys = []) {
+  if (!prioritySignalKeys.length) return candidates;
+  const keys = new Set(prioritySignalKeys);
+  const prioritized = [];
+  const remaining = [];
+
+  for (const candidate of candidates) {
+    if (keys.has(buildSignalKey(candidate))) prioritized.push(candidate);
+    else remaining.push(candidate);
+  }
+
+  return [...prioritized, ...remaining];
+}
+
+function strongestCandidatePerPair(candidates) {
+  const byPair = new Map();
+
+  for (const candidate of candidates || []) {
+    const existing = byPair.get(candidate.pair);
+    if (!existing || Number(candidate.score || 0) > Number(existing.score || 0)) {
+      byPair.set(candidate.pair, candidate);
+    }
+  }
+
+  return [...byPair.values()];
+}
+
+function loadInternalSignalHistory() {
+  const raw = state.readJson(config.internalSignalHistoryPath, INTERNAL_SIGNAL_HISTORY_DEFAULT) || {};
+  return {
+    events: Array.isArray(raw.events) ? raw.events : [],
+    lastByPair: raw.lastByPair && typeof raw.lastByPair === "object" ? raw.lastByPair : {},
+  };
+}
+
+function saveInternalSignalHistory(snapshot) {
+  state.writeJson(config.internalSignalHistoryPath, snapshot);
+  return snapshot;
+}
+
+function recordInternalSignalEvents(candidates, recordedAt = new Date().toISOString()) {
+  const history = loadInternalSignalHistory();
+  const strongest = strongestCandidatePerPair(candidates)
+    .sort((a, b) => Number(a.score || 0) - Number(b.score || 0));
+
+  for (const candidate of strongest) {
+    const pair = String(candidate.pair || "").toUpperCase();
+    const side = String(candidate.side || "").toUpperCase();
+    const previous = history.lastByPair[pair];
+
+    history.lastByPair[pair] = {
+      side,
+      score: Number(candidate.score || 0),
+      recordedAt,
+      baseTimeframe: candidate.baseTimeframe || null,
+    };
+
+    if (previous?.side === side) continue;
+
+    history.events.push({
+      pair,
+      side,
+      score: Number(candidate.score || 0),
+      baseTimeframe: candidate.baseTimeframe || null,
+      recordedAt,
+    });
+  }
+
+  history.events = history.events.slice(-INTERNAL_SIGNAL_EVENT_LIMIT);
+  return saveInternalSignalHistory(history);
+}
+
+function recentOtherSignalEvents(events, pair, limit) {
+  return (events || [])
+    .filter((event) => event.pair !== String(pair || "").toUpperCase())
+    .slice(-limit);
+}
+
+function buildForcedCloseReasonForCondition1(position, reverseSide, reverseVotes, windowEvents) {
+  return `Market is getting reversed. Same-pair ${reverseSide} signal appeared and ${reverseVotes} of the last ${windowEvents.length} internal signals from other pairs also flipped ${reverseSide}.`;
+}
+
+function buildForcedCloseReasonForCondition2(position, reverseSide) {
+  return `Closed because the last ${BREADTH_REVERSAL_WINDOW} internal signals from other pairs were ${reverseSide}, showing broad market reversal pressure.`;
+}
+
+function evaluateInternalMarketClosures(priceByPair, candidates) {
+  const history = recordInternalSignalEvents(candidates);
+  const openPositions = dryrun.getBlockingOpenTrades();
+  const updates = [];
+  const priorityCandidates = [];
+
+  for (const position of openPositions) {
+    const reverseSide = oppositeSide(position.side);
+    const reverseCandidate = (candidates || [])
+      .filter(
+        (candidate) =>
+          String(candidate.pair || "").toUpperCase() === position.pair &&
+          String(candidate.side || "").toUpperCase() === reverseSide
+      )
+      .sort((a, b) => Number(b.score || 0) - Number(a.score || 0))[0];
+    const lastThreeOther = recentOtherSignalEvents(history.events, position.pair, REVERSE_MAJORITY_WINDOW);
+    const reverseVotes = lastThreeOther.filter((event) => event.side === reverseSide).length;
+    const forceClosePrice =
+      Number(priceByPair?.[position.pair]) ||
+      Number(reverseCandidate?.currentPrice) ||
+      Number(position.currentMark) ||
+      Number(position.entryPrice);
+
+    if (reverseCandidate && lastThreeOther.length >= REVERSE_MAJORITY_MIN && reverseVotes >= REVERSE_MAJORITY_MIN) {
+      const forced = dryrun.forceCloseTrade(position.signalId || position.id || position.signalKey, forceClosePrice, {
+        reasonCode: "MARKET_REVERSED",
+        reasonText: buildForcedCloseReasonForCondition1(position, reverseSide, reverseVotes, lastThreeOther),
+        forceDirection: reverseSide,
+      });
+
+      if (forced) {
+        updates.push(forced);
+        priorityCandidates.push(reverseCandidate);
+      }
+      continue;
+    }
+
+    const lastFiveOther = recentOtherSignalEvents(history.events, position.pair, BREADTH_REVERSAL_WINDOW);
+    if (
+      lastFiveOther.length === BREADTH_REVERSAL_WINDOW &&
+      lastFiveOther.every((event) => event.side === reverseSide)
+    ) {
+      const forced = dryrun.forceCloseTrade(position.signalId || position.id || position.signalKey, forceClosePrice, {
+        reasonCode: "BREADTH_REVERSED",
+        reasonText: buildForcedCloseReasonForCondition2(position, reverseSide),
+        forceDirection: reverseSide,
+      });
+
+      if (forced) updates.push(forced);
+    }
+  }
+
+  return {
+    updates,
+    priorityCandidates,
+    recordedEvents: history.events,
+  };
+}
+
+async function dispatchSignals(bot, chatId, candidates, options = {}) {
   const deduped = dedupeCandidates(candidates);
-  if (!deduped.length) return [];
+  const prioritized = prioritizeCandidates(deduped, options.prioritySignalKeys || []);
+  if (!prioritized.length) return [];
 
   const activeSignals = state.readJson(config.activeSignalsPath, {});
   const results = [];
 
-  for (const candidate of deduped) {
+  for (const candidate of prioritized) {
     const signalKey = buildSignalKey(candidate);
     const band = getBand(candidate.score);
     const previous = activeSignals[signalKey];
@@ -322,6 +457,8 @@ async function dispatchTradeUpdates(bot, chatId, updates) {
       text = buildTargetHitMessage(position);
     } else if (update.type === "SL HIT") {
       text = buildStopHitMessage(position);
+    } else if (update.type === "FORCE CLOSED") {
+      text = buildForceClosedMessage(position);
     } else {
       continue;
     }
@@ -356,4 +493,5 @@ module.exports = {
   dispatchTradeUpdates,
   buildSignalKey,
   dedupeCandidates,
+  evaluateInternalMarketClosures,
 };

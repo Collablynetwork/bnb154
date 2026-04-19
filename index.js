@@ -409,7 +409,8 @@ async function runScan(options = {}) {
       }
     }
 
-    const topCandidates = dedupeCandidates(candidates).slice(0, 25);
+    const allCandidates = dedupeCandidates(candidates);
+    const topCandidates = allCandidates.slice(0, 25);
 
     state.writeJson(config.scoreStatePath, {
       generatedAt: new Date().toISOString(),
@@ -419,26 +420,46 @@ async function runScan(options = {}) {
       candidates: topCandidates,
     });
 
-    if (!options.suppressSignals) {
-      await signalEngine.dispatchSignals(
-        bot,
-        options.chatId || config.telegramChatId,
-        topCandidates
-      );
-    }
-
     const prices = {};
     for (const pair of scanPairs) {
       const mark = featureStore[pair]?.["1m"]?.features?.currentClose;
       if (Number.isFinite(mark)) prices[pair] = mark;
     }
 
+    const forcedClosures = signalEngine.evaluateInternalMarketClosures(prices, allCandidates);
+    if (forcedClosures.updates.length) {
+      await signalEngine.dispatchTradeUpdates(
+        bot,
+        options.chatId || config.telegramChatId,
+        forcedClosures.updates
+      );
+    }
+
+    if (!options.suppressSignals) {
+      const prioritySignalKeys = (forcedClosures.priorityCandidates || []).map((candidate) =>
+        signalEngine.buildSignalKey(candidate)
+      );
+      const dispatchCandidates = [
+        ...(forcedClosures.priorityCandidates || []),
+        ...topCandidates,
+      ];
+
+      await signalEngine.dispatchSignals(
+        bot,
+        options.chatId || config.telegramChatId,
+        dispatchCandidates,
+        { prioritySignalKeys }
+      );
+    }
+
     const updates = dryrun.evaluateTargetsAndStops(prices);
-    await signalEngine.dispatchTradeUpdates(
-      bot,
-      options.chatId || config.telegramChatId,
-      updates
-    );
+    if (updates.length) {
+      await signalEngine.dispatchTradeUpdates(
+        bot,
+        options.chatId || config.telegramChatId,
+        updates
+      );
+    }
 
     return {
       skipped: false,

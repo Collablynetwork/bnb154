@@ -78,6 +78,8 @@ function getStoragePaths() {
     dryRunPositionsPath: config.dryRunPositionsPath || path.join(storageDir, "dryrun-positions.json"),
     closedTradesPath: config.closedTradesPath || path.join(storageDir, "closed-trades.json"),
     learnedPumpsPath: config.learnedPumpsPath || path.join(storageDir, "learned-pumps.json"),
+    internalSignalHistoryPath:
+      config.internalSignalHistoryPath || path.join(storageDir, "internal-signal-history.json"),
     strategySettingsPath:
       config.strategySettingsPath || path.join(storageDir, "strategy-settings.json"),
     strategiesIndexPath: config.strategiesIndexPath || path.join(strategiesDir, "index.json"),
@@ -95,6 +97,10 @@ function ensureStorage() {
   ensureJsonFile(paths.dryRunPositionsPath, []);
   ensureJsonFile(paths.closedTradesPath, []);
   ensureJsonFile(paths.learnedPumpsPath, []);
+  ensureJsonFile(paths.internalSignalHistoryPath, {
+    events: [],
+    lastByPair: {},
+  });
   ensureJsonFile(paths.strategySettingsPath, {
     keepRecentDays: Number(config.defaultStrategyRetentionDays || 3),
   });

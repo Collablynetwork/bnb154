@@ -1,6 +1,6 @@
 const TelegramBot = require("node-telegram-bot-api");
 const config = require("./config");
-const { getWatchedPairs, saveWatchedPairs, getAllowedPairs } = require("./state");
+const { getWatchedPairs, saveWatchedPairs, getAllowedPairs, writeJson } = require("./state");
 const {
   loadStrategiesIndex,
   getStrategyByPair,
@@ -40,6 +40,7 @@ const COMMANDS = [
   { command: "closed", description: "Show fully closed trades" },
   { command: "dryrunlong", description: "Open dry-run LONG tests" },
   { command: "dryrunshort", description: "Open dry-run SHORT tests" },
+  { command: "cleartradehistory", description: "Clear tracked trade history" },
   { command: "strategies", description: "Show saved strategy count" },
   { command: "strategylist", description: "List saved strategies" },
   { command: "strategy", description: "Show detailed strategy" },
@@ -184,10 +185,11 @@ function buildHelpText() {
     "/closed - show fully closed trades",
     "/dryrunlong - create dry-run LONG tests",
     "/dryrunshort - create dry-run SHORT tests",
+    "/cleartradehistory - clear tracked trades and PNL history",
     "/strategies - show saved strategy count",
     "/strategylist - list saved strategies",
     "/strategy BTCUSDT - show saved strategy in detail",
-    "/recentstrategyday 3 - keep strategies for 3 days",
+    "/recentstrategyday 3 - keep strategies for 3 days (default is 3)",
     "/clearstrategy BTCUSDT - remove saved strategies for one pair",
     "/clearallstrategy - remove all saved strategies",
     "/rebuildstrategies - rebuild strategy index from files",
@@ -464,6 +466,28 @@ function registerHandlers(bot, callbacks) {
     await sendTemporaryMessage(bot, 
       msg.chat.id,
       summarizeDryrunInsert(added, "SHORT"),
+      buildMainMenu()
+    );
+  });
+
+  bot.onText(commandRegex("cleartradehistory"), async (msg) => {
+    cleanupIncomingMessage(bot, msg);
+    const result = dryrun.clearTradeHistory();
+    writeJson(config.activeSignalsPath, {});
+    writeJson(config.internalSignalHistoryPath, {
+      events: [],
+      lastByPair: {},
+    });
+
+    await sendTemporaryMessage(
+      bot,
+      msg.chat.id,
+      [
+        "🧹 Trade history cleared",
+        `Removed open trades: ${result.removedOpenCount}`,
+        `Removed closed trades: ${result.removedClosedCount}`,
+        `Removed total records: ${result.removedTotalCount}`,
+      ].join("\n"),
       buildMainMenu()
     );
   });

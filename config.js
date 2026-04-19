@@ -82,6 +82,7 @@ module.exports = {
   dryRunPositionsPath: path.join(storageDir, "dryrun-positions.json"),
   closedTradesPath: path.join(storageDir, "closed-trades.json"),
   learnedPumpsPath: path.join(storageDir, "learned-pumps.json"),
+  internalSignalHistoryPath: path.join(storageDir, "internal-signal-history.json"),
   strategySettingsPath: path.join(storageDir, "strategy-settings.json"),
 
   strategiesDir,

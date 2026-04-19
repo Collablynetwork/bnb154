@@ -41,6 +41,7 @@ npm start
 - `/pnl`
 - `/signals`
 - `/closed`
+- `/cleartradehistory`
 - `/strategies`
 - `/strategylist`
 - `/strategy BTCUSDT`

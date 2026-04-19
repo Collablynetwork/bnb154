@@ -28,6 +28,7 @@ function normalizeTradeStatus(status) {
 
   if (value.includes("TARGET ACHIEVED")) return "TARGET ACHIEVED";
   if (/^SL\d+$/.test(value) || value === "SL HIT") return "SL HIT";
+  if (value.includes("FORCE CLOSED") || value.includes("MARKET REVERSED")) return "FORCE CLOSED";
   if (value === "DISABLED" || value === "REMOVED") return "DISABLED";
   return "OPEN";
 }
@@ -69,9 +70,20 @@ function normalizePosition(position, options = {}) {
   normalized.pnlExitPrice = pnlExitPrice;
   normalized.pnlPct = pnlPct;
   normalized.pnlAmount = pnlAmount;
+  normalized.forceCloseReason = normalized.forceCloseReason ?? null;
+  normalized.forceCloseCode = normalized.forceCloseCode ?? null;
+  normalized.forceClosedDirection = normalized.forceClosedDirection ?? null;
 
   for (const key of Object.keys(normalized)) {
-    if (/^pnl\d+/.test(key) || /^target\d+Price$/.test(key) || /^sl\d+Price$/.test(key)) {
+    if (
+      /^pnl\d+/.test(key) ||
+      /^target\d+Price$/.test(key) ||
+      /^sl\d+Price$/.test(key) ||
+      key === "tp2" ||
+      key === "tp3" ||
+      key === "ignoredTp3" ||
+      key === "ignoredTp4"
+    ) {
       delete normalized[key];
     }
   }
@@ -177,10 +189,6 @@ function createPosition(signal) {
     targetPrice,
     stopPrice,
     tp1: targetPrice,
-    tp2: Number(signal.ignoredTp3),
-    tp3: Number(signal.ignoredTp4),
-    ignoredTp3: Number(signal.ignoredTp3),
-    ignoredTp4: Number(signal.ignoredTp4),
     originalSystemTp1: Number(signal.originalSystemTp1),
     originalSystemSl: Number(signal.originalSystemSl),
     strategyUsed: buildStrategyUsed(signal),
@@ -199,6 +207,9 @@ function createPosition(signal) {
     pnlExitPrice: null,
     pnlPct: 0,
     pnlAmount: 0,
+    forceCloseReason: null,
+    forceCloseCode: null,
+    forceClosedDirection: null,
     blocksNewSignals: true,
     monitoringActive: true,
     status: "OPEN",
@@ -282,6 +293,16 @@ function getBlockingOpenTrades() {
   return loadOpenPositions().filter((position) => position.monitoringActive && position.blocksNewSignals);
 }
 
+function findTrackedPosition(positions, identifier) {
+  return positions.find(
+    (position) =>
+      position.signalId === identifier ||
+      position.id === identifier ||
+      position.signalKey === identifier ||
+      position.pair === String(identifier || "").toUpperCase()
+  );
+}
+
 function registerSignal(signal) {
   const existing = findExistingTrackedSignal(signal.pair, signal.side, signal.baseTimeframe);
   if (existing) return existing;
@@ -323,6 +344,50 @@ function clearOpenTrades() {
       .map((position) => position.signalKey)
       .filter(Boolean),
   };
+}
+
+function clearTradeHistory() {
+  const openPositions = loadOpenPositions();
+  const closedTrades = loadClosedTrades();
+  saveOpenPositions([]);
+  saveClosedTrades([]);
+
+  return {
+    removedOpenCount: openPositions.length,
+    removedClosedCount: closedTrades.length,
+    removedTotalCount: openPositions.length + closedTrades.length,
+  };
+}
+
+function forceCloseTrade(identifier, exitPrice, details = {}) {
+  const openPositions = loadOpenPositions();
+  const closedTrades = loadClosedTrades();
+  const position = findTrackedPosition(openPositions, identifier);
+
+  if (!position) return null;
+
+  const mark = Number.isFinite(Number(exitPrice))
+    ? Number(exitPrice)
+    : Number(position.currentMark || position.entryPrice || position.entry || 0);
+
+  updatePositionMark(position, mark);
+  position.forceCloseReason = details.reasonText || details.reason || null;
+  position.forceCloseCode = details.reasonCode || null;
+  position.forceClosedDirection = details.forceDirection || null;
+
+  const event = markTradeClosed(position, "FORCE CLOSED", mark);
+  if (!event) return null;
+
+  event.reasonText = position.forceCloseReason;
+  event.reasonCode = position.forceCloseCode;
+  event.forceDirection = position.forceClosedDirection;
+
+  const remainingOpen = openPositions.filter((item) => item.signalId !== position.signalId);
+  closedTrades.push({ ...position });
+  saveOpenPositions(remainingOpen);
+  saveClosedTrades(closedTrades);
+
+  return event;
 }
 
 function evaluateTargetsAndStops(priceByPair) {
@@ -438,6 +503,8 @@ module.exports = {
   canOpenNewSignal,
   getBlockingOpenTrades,
   clearOpenTrades,
+  clearTradeHistory,
+  forceCloseTrade,
   findExistingTrackedSignal,
   findExistingOpen: findExistingTrackedSignal,
 };

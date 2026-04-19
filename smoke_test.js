@@ -15,6 +15,7 @@ config.activeSignalsPath = path.join(storageDir, 'active-signals.json');
 config.dryRunPositionsPath = path.join(storageDir, 'dryrun-positions.json');
 config.closedTradesPath = path.join(storageDir, 'closed-trades.json');
 config.learnedPumpsPath = path.join(storageDir, 'learned-pumps.json');
+config.internalSignalHistoryPath = path.join(storageDir, 'internal-signal-history.json');
 config.strategySettingsPath = path.join(storageDir, 'strategy-settings.json');
 config.strategiesDir = path.join(storageDir, 'strategies');
 config.strategiesIndexPath = path.join(config.strategiesDir, 'index.json');
@@ -85,6 +86,10 @@ assert.strictEqual(candidate.baseTimeframe, '1m');
 assert.strictEqual(candidate.supportTfs.length, 3);
 assert(candidate.targetPrice < candidate.originalSystemTp1, 'Adjusted target should be lower');
 assert(candidate.stopPrice < candidate.originalSystemSl, 'Adjusted stop should be lower');
+assert.strictEqual(candidate.tp2, undefined, 'TP3 should be removed');
+assert.strictEqual(candidate.tp3, undefined, 'TP4 should be removed');
+assert.strictEqual(candidate.ignoredTp3, undefined, 'Ignored TP3 should be removed');
+assert.strictEqual(candidate.ignoredTp4, undefined, 'Ignored TP4 should be removed');
 
 // 2) One blocking signal at a time
 const first = dryrun.registerSignal({ ...candidate, signalKey: signals.buildSignalKey(candidate), signalMessageId: 111 });
@@ -169,6 +174,71 @@ const clearAllResult = strategyLearner.clearAllStrategies();
 assert(clearAllResult.removedCount >= 1, 'Clear-all should remove remaining strategies');
 assert.strictEqual(strategyLearner.loadStrategies().length, 0, 'No strategies should remain after clear-all');
 assert.strictEqual(strategyLearner.getStrategyRetentionDays(), 2, 'Clear-all should not reset retention days');
+
+// 11) Condition 1 should force-close and prioritize same-pair reversal
+dryrun.clearTradeHistory();
+state.writeJson(config.internalSignalHistoryPath, { events: [], lastByPair: {} });
+
+const longCandidate = signals.buildSignalCandidate(makeMatch({ pair: 'BTCUSDT', score: 88 }));
+const trackedLong = dryrun.registerSignal({
+  ...longCandidate,
+  signalKey: signals.buildSignalKey(longCandidate),
+  signalMessageId: 999,
+});
+assert(trackedLong, 'Reversal test trade should open');
+
+signals.evaluateInternalMarketClosures(
+  { BTCUSDT: 100, ETHUSDT: 200, XRPUSDT: 0.5 },
+  [
+    { pair: 'ETHUSDT', side: 'SHORT', score: 85, baseTimeframe: '1m', currentPrice: 200 },
+    { pair: 'XRPUSDT', side: 'SHORT', score: 84, baseTimeframe: '1m', currentPrice: 0.5 },
+  ]
+);
+
+const reversalResult = signals.evaluateInternalMarketClosures(
+  { BTCUSDT: 99.7, ETHUSDT: 200, XRPUSDT: 0.5 },
+  [
+    { pair: 'ETHUSDT', side: 'SHORT', score: 85, baseTimeframe: '1m', currentPrice: 200 },
+    { pair: 'XRPUSDT', side: 'SHORT', score: 84, baseTimeframe: '1m', currentPrice: 0.5 },
+    { pair: 'BTCUSDT', side: 'SHORT', score: 90, baseTimeframe: '1m', currentPrice: 99.7 },
+  ]
+);
+assert.strictEqual(reversalResult.updates.length, 1, 'Same-pair reversal should force close');
+assert.strictEqual(reversalResult.updates[0].type, 'FORCE CLOSED', 'Forced close type should be emitted');
+assert.strictEqual(reversalResult.priorityCandidates[0].pair, 'BTCUSDT', 'Same pair should be prioritized for reverse entry');
+assert.strictEqual(reversalResult.priorityCandidates[0].side, 'SHORT', 'Reverse direction should be prioritized');
+assert(dryrun.loadClosedTrades().some((trade) => trade.forceCloseCode === 'MARKET_REVERSED'), 'Forced reversal reason should persist');
+
+// 12) Condition 2 should close on 5 opposite-direction internal signals
+dryrun.clearTradeHistory();
+state.writeJson(config.internalSignalHistoryPath, { events: [], lastByPair: {} });
+
+const breadthLong = signals.buildSignalCandidate(makeMatch({ pair: 'ETHUSDT', score: 89 }));
+const trackedBreadthLong = dryrun.registerSignal({
+  ...breadthLong,
+  signalKey: signals.buildSignalKey(breadthLong),
+  signalMessageId: 1001,
+});
+assert(trackedBreadthLong, 'Breadth test trade should open');
+
+const breadthResult = signals.evaluateInternalMarketClosures(
+  { ETHUSDT: 199.4, BNBUSDT: 600, SOLUSDT: 150, XRPUSDT: 0.5, ADAUSDT: 1.2, DOGEUSDT: 0.2 },
+  [
+    { pair: 'BNBUSDT', side: 'SHORT', score: 85, baseTimeframe: '1m', currentPrice: 600 },
+    { pair: 'SOLUSDT', side: 'SHORT', score: 84, baseTimeframe: '1m', currentPrice: 150 },
+    { pair: 'XRPUSDT', side: 'SHORT', score: 83, baseTimeframe: '1m', currentPrice: 0.5 },
+    { pair: 'ADAUSDT', side: 'SHORT', score: 82, baseTimeframe: '1m', currentPrice: 1.2 },
+    { pair: 'DOGEUSDT', side: 'SHORT', score: 81, baseTimeframe: '1m', currentPrice: 0.2 },
+  ]
+);
+assert.strictEqual(breadthResult.updates.length, 1, 'Broad opposite breadth should force close');
+assert.strictEqual(breadthResult.updates[0].reasonCode, 'BREADTH_REVERSED', 'Breadth close reason code should persist');
+
+// 13) Clearing trade history should remove open and closed records
+const historyReset = dryrun.clearTradeHistory();
+assert.strictEqual(historyReset.removedTotalCount >= 1, true, 'Trade history reset should remove tracked trades');
+assert.strictEqual(dryrun.loadOpenPositions().length, 0, 'Open trades should be cleared');
+assert.strictEqual(dryrun.loadClosedTrades().length, 0, 'Closed trades should be cleared');
 
 console.log('All smoke tests passed');
 console.log(JSON.stringify({

@@ -51,12 +51,10 @@ function buildSignalMessage(candidate) {
     `💵 Entry Price: ${formatPrice(candidate.entry)}`,
     `✅ Target Price: ${formatPrice(candidate.targetPrice)}`,
     `❌ Stop Price: ${formatPrice(candidate.stopPrice)}`,
-    `📌 TP3 (ignored in stats): ${formatPrice(candidate.ignoredTp3)}`,
-    `📌 TP4 (ignored in stats): ${formatPrice(candidate.ignoredTp4)}`,
     `⚖️ Risk/Reward: ${formatRatio(candidate.riskReward)}`,
     `🧠 Strategy Source: ${candidate.strategyUsed || candidate.strategySource || "N/A"}`,
     reasons.length ? `✅ Conditions: ${reasons.join(" | ")}` : "✅ Conditions: Matched learned setup",
-    `ℹ️ Performance uses the target and stop shown above. TP3 and TP4 stay informational only.`,
+    `ℹ️ Performance uses the target and stop shown above.`,
   ].join("\n");
 }
 
@@ -116,6 +114,19 @@ function buildStopHitMessage(position) {
   ].join("\n");
 }
 
+function buildForceClosedMessage(position) {
+  return [
+    "⚠️ SIGNAL CLOSED FORCEFULLY",
+    `🪙 Pair: ${position.pair}`,
+    `📍 Side: ${position.side}`,
+    `⏱ Base TF: ${position.baseTimeframe}`,
+    `💵 Entry: ${formatPrice(position.entryPrice || position.entry)}`,
+    `📌 Exit Mark: ${formatPrice(position.currentMark)}`,
+    `💹 PNL: ${formatPrice(position.pnlAmount)} (${formatPct(position.pnlPct)})`,
+    `📝 Reason: ${position.forceCloseReason || "Internal market breadth reversed."}`,
+  ].join("\n");
+}
+
 module.exports = {
   buildBinancePairLink,
   buildSignalMessage,
@@ -123,4 +134,5 @@ module.exports = {
   buildScoreRisingMessage,
   buildTargetHitMessage,
   buildStopHitMessage,
+  buildForceClosedMessage,
 };
