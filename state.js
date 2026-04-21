@@ -4,22 +4,13 @@ const config = require("./config");
 const defaultPairs = require("./pair");
 
 function ensureDir(dirPath) {
-  if (typeof dirPath !== "string" || !dirPath.trim()) {
-    throw new Error(`Invalid directory path: ${dirPath}`);
-  }
-
   if (!fs.existsSync(dirPath)) {
     fs.mkdirSync(dirPath, { recursive: true });
   }
 }
 
 function ensureJsonFile(filePath, defaultValue) {
-  if (typeof filePath !== "string" || !filePath.trim()) {
-    throw new Error(`Invalid JSON file path: ${filePath}`);
-  }
-
   ensureDir(path.dirname(filePath));
-
   if (!fs.existsSync(filePath)) {
     fs.writeFileSync(filePath, JSON.stringify(defaultValue, null, 2));
   }
@@ -37,7 +28,7 @@ function readJson(filePath, defaultValue = null) {
 }
 
 function writeJson(filePath, data) {
-  ensureJsonFile(filePath, Array.isArray(data) ? [] : {});
+  ensureDir(path.dirname(filePath));
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
 }
 
@@ -65,67 +56,134 @@ function filterToAllowedPairs(pairs) {
   return uniqueUpper(pairs).filter((pair) => allowed.has(pair));
 }
 
-function getStoragePaths() {
-  const storageDir = config.storageDir || path.join(__dirname, "storage");
-  const strategiesDir = config.strategiesDir || path.join(storageDir, "strategies");
-
+function defaultRuntimeSettings() {
   return {
-    storageDir,
-    strategiesDir,
-    pairsPath: config.pairsPath || path.join(storageDir, "pairs.json"),
-    scoreStatePath: config.scoreStatePath || path.join(storageDir, "score-state.json"),
-    activeSignalsPath: config.activeSignalsPath || path.join(storageDir, "active-signals.json"),
-    dryRunPositionsPath: config.dryRunPositionsPath || path.join(storageDir, "dryrun-positions.json"),
-    closedTradesPath: config.closedTradesPath || path.join(storageDir, "closed-trades.json"),
-    learnedPumpsPath: config.learnedPumpsPath || path.join(storageDir, "learned-pumps.json"),
-    internalSignalHistoryPath:
-      config.internalSignalHistoryPath || path.join(storageDir, "internal-signal-history.json"),
-    strategySettingsPath:
-      config.strategySettingsPath || path.join(storageDir, "strategy-settings.json"),
-    strategiesIndexPath: config.strategiesIndexPath || path.join(strategiesDir, "index.json"),
+    strategyRetentionHours: Number(config.defaultStrategyRetentionHours || 4),
+    updatedAt: nowIso(),
   };
 }
 
 function ensureStorage() {
-  const paths = getStoragePaths();
-
-  ensureDir(paths.storageDir);
-  ensureDir(paths.strategiesDir);
-  ensureJsonFile(paths.pairsPath, getAllowedPairs());
-  ensureJsonFile(paths.scoreStatePath, {});
-  ensureJsonFile(paths.activeSignalsPath, {});
-  ensureJsonFile(paths.dryRunPositionsPath, []);
-  ensureJsonFile(paths.closedTradesPath, []);
-  ensureJsonFile(paths.learnedPumpsPath, []);
-  ensureJsonFile(paths.internalSignalHistoryPath, {
-    events: [],
-    lastByPair: {},
-  });
-  ensureJsonFile(paths.strategySettingsPath, {
-    keepRecentDays: Number(config.defaultStrategyRetentionDays || 3),
-  });
-  ensureJsonFile(paths.strategiesIndexPath, []);
+  ensureDir(config.storageDir || path.join(__dirname, "storage"));
+  ensureDir(config.strategiesDir);
+  ensureJsonFile(config.pairsPath, getAllowedPairs());
+  ensureJsonFile(config.scoreStatePath, {});
+  ensureJsonFile(config.activeSignalsPath, {});
+  ensureJsonFile(config.dryRunPositionsPath, []);
+  ensureJsonFile(config.closedTradesPath, []);
+  ensureJsonFile(config.learnedPumpsPath, []);
+  ensureJsonFile(config.strategiesIndexPath, []);
+  ensureJsonFile(config.runtimeSettingsPath, defaultRuntimeSettings());
 }
 
 function getWatchedPairs() {
-  const paths = getStoragePaths();
-  const stored = readJson(paths.pairsPath, getAllowedPairs()) || [];
+  const stored = readJson(config.pairsPath, getAllowedPairs()) || [];
   const filtered = filterToAllowedPairs(stored);
   return filtered.length ? filtered : getAllowedPairs();
 }
 
 function saveWatchedPairs(pairs) {
-  const paths = getStoragePaths();
   const normalized = filterToAllowedPairs(pairs).sort();
-  writeJson(paths.pairsPath, normalized);
+  writeJson(config.pairsPath, normalized);
   return normalized;
+}
+
+function getRuntimeSettings() {
+  const stored = readJson(config.runtimeSettingsPath, defaultRuntimeSettings()) || {};
+  return {
+    ...defaultRuntimeSettings(),
+    ...stored,
+    strategyRetentionHours: Number(stored.strategyRetentionHours || config.defaultStrategyRetentionHours || 4),
+  };
+}
+
+function saveRuntimeSettings(patch = {}) {
+  const next = {
+    ...getRuntimeSettings(),
+    ...patch,
+    updatedAt: nowIso(),
+  };
+  writeJson(config.runtimeSettingsPath, next);
+  return next;
+}
+
+function clearAllTradingStatus() {
+  writeJson(config.activeSignalsPath, {});
+  writeJson(config.dryRunPositionsPath, []);
+  writeJson(config.closedTradesPath, []);
+  return {
+    cleared: true,
+    clearedAt: nowIso(),
+  };
+}
+
+function isJsonFile(fileName) {
+  return String(fileName || "").toLowerCase().endsWith(".json");
+}
+
+function safeUnlink(filePath) {
+  try {
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    return true;
+  } catch (error) {
+    console.error(`safeUnlink failed for ${filePath}:`, error.message);
+    return false;
+  }
+}
+
+function clearAllTradingStrategies() {
+  ensureDir(config.strategiesDir);
+  const removedFiles = [];
+
+  for (const fileName of fs.readdirSync(config.strategiesDir)) {
+    if (!isJsonFile(fileName)) continue;
+    const fullPath = path.join(config.strategiesDir, fileName);
+    if (safeUnlink(fullPath)) removedFiles.push(fileName);
+  }
+
+  writeJson(config.strategiesIndexPath, []);
+  writeJson(config.learnedPumpsPath, []);
+
+  return {
+    cleared: true,
+    removedFiles,
+    clearedAt: nowIso(),
+  };
+}
+
+function parseDate(value) {
+  const ts = new Date(value).getTime();
+  return Number.isFinite(ts) ? ts : 0;
+}
+
+function pruneStrategiesByRetentionHours(hours) {
+  const retentionHours = Math.max(1, Number(hours || getRuntimeSettings().strategyRetentionHours || 4));
+  const cutoff = Date.now() - retentionHours * 60 * 60 * 1000;
+  const all = readJson(config.strategiesIndexPath, []);
+  const kept = [];
+  const removed = [];
+
+  for (const item of all) {
+    const ts = parseDate(item?.eventTime || item?.timestamp || item?.savedAt || item?.createdAt);
+    if (ts && ts >= cutoff) kept.push(item);
+    else removed.push(item);
+  }
+
+  writeJson(config.strategiesIndexPath, kept);
+  saveRuntimeSettings({ strategyRetentionHours: retentionHours });
+
+  return {
+    retentionHours,
+    cutoffIso: new Date(cutoff).toISOString(),
+    kept: kept.length,
+    removed: removed.length,
+  };
 }
 
 module.exports = {
   ensureDir,
   ensureJsonFile,
   ensureStorage,
-  getStoragePaths,
   readJson,
   writeJson,
   appendJsonArray,
@@ -135,4 +193,9 @@ module.exports = {
   filterToAllowedPairs,
   getWatchedPairs,
   saveWatchedPairs,
+  getRuntimeSettings,
+  saveRuntimeSettings,
+  clearAllTradingStatus,
+  clearAllTradingStrategies,
+  pruneStrategiesByRetentionHours,
 };

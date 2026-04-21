@@ -26,15 +26,10 @@ function normalizeFuturesRestUrl(rawValue) {
   return raw;
 }
 
-function finiteNumber(value, fallback) {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric : fallback;
-}
-
 const storageDir = path.join(__dirname, "storage");
 const strategiesDir = path.join(storageDir, "strategies");
-const notifyMinScore = finiteNumber(process.env.NOTIFY_MIN_SCORE, 80);
-const defaultStrategyRetentionDays = finiteNumber(process.env.STRATEGY_RETENTION_DAYS, 3);
+const notifyMinScore = Number(process.env.NOTIFY_MIN_SCORE || 80);
+const defaultStrategyRetentionHours = Number(process.env.STRATEGY_RETENTION_HOURS || 4);
 
 module.exports = {
   storageDir,
@@ -54,23 +49,24 @@ module.exports = {
   telegramPolling:
     String(process.env.TELEGRAM_POLLING || "true").toLowerCase() === "true",
 
-  scanEveryMs: finiteNumber(process.env.SCAN_EVERY_MS, 60_000),
-  maxKlinesPerRequest: finiteNumber(process.env.MAX_KLINES_PER_REQUEST, 300),
-  maxParallelRequests: finiteNumber(process.env.MAX_PARALLEL_REQUESTS, 4),
+  scanEveryMs: Number(process.env.SCAN_EVERY_MS || 60_000),
+  maxKlinesPerRequest: Number(process.env.MAX_KLINES_PER_REQUEST || 300),
+  maxParallelRequests: Number(process.env.MAX_PARALLEL_REQUESTS || 4),
 
-  watchThreshold: finiteNumber(process.env.WATCH_THRESHOLD, 70),
-  strongThreshold: finiteNumber(process.env.STRONG_THRESHOLD, 80),
-  alertThreshold: finiteNumber(process.env.ALERT_THRESHOLD, 90),
-  scoreRiseThreshold: finiteNumber(process.env.SCORE_RISE_THRESHOLD, 5),
+  watchThreshold: Number(process.env.WATCH_THRESHOLD || 70),
+  strongThreshold: Number(process.env.STRONG_THRESHOLD || 80),
+  alertThreshold: Number(process.env.ALERT_THRESHOLD || 90),
+  scoreRiseThreshold: Number(process.env.SCORE_RISE_THRESHOLD || 5),
   notifyMinScore,
 
   allowedBaseTimeframes: ["1m", "5m"],
-  minSupportCount: finiteNumber(process.env.MIN_SUPPORT_COUNT, 3),
-  systemTargetAdjustPct: finiteNumber(process.env.SYSTEM_TARGET_ADJUST_PCT, 0.1),
-  systemStopAdjustPct: finiteNumber(process.env.SYSTEM_STOP_ADJUST_PCT, 0.1),
+  minSupportCount: Number(process.env.MIN_SUPPORT_COUNT || 3),
+  pnl1TargetPct: Number(process.env.PNL1_TARGET_PCT || 0.2),
+  pnl1StopPct: Number(process.env.PNL1_STOP_PCT || 0.2),
+  systemTargetAdjustPct: Number(process.env.SYSTEM_TARGET_ADJUST_PCT || 0.1),
+  systemStopAdjustPct: Number(process.env.SYSTEM_STOP_ADJUST_PCT || 0.1),
 
-  dryRunNotional: finiteNumber(process.env.DRYRUN_NOTIONAL, 100),
-  defaultStrategyRetentionDays,
+  dryRunNotional: Number(process.env.DRYRUN_NOTIONAL || 100),
 
   scanAllValidUsdtPairs: false,
   maxScanPairs: 0,
@@ -82,11 +78,11 @@ module.exports = {
   dryRunPositionsPath: path.join(storageDir, "dryrun-positions.json"),
   closedTradesPath: path.join(storageDir, "closed-trades.json"),
   learnedPumpsPath: path.join(storageDir, "learned-pumps.json"),
-  internalSignalHistoryPath: path.join(storageDir, "internal-signal-history.json"),
-  strategySettingsPath: path.join(storageDir, "strategy-settings.json"),
+  runtimeSettingsPath: path.join(storageDir, "runtime-settings.json"),
 
   strategiesDir,
   strategiesIndexPath: path.join(strategiesDir, "index.json"),
+  defaultStrategyRetentionHours,
 
   supportedKlineIntervals: [
     "1m", "5m", "15m", "30m",

@@ -2,137 +2,28 @@ const config = require("./config");
 const { readJson, writeJson, nowIso } = require("./state");
 const { round } = require("./indicators");
 
-function pickFiniteNumber(...values) {
-  for (const value of values) {
-    const num = Number(value);
-    if (Number.isFinite(num)) return num;
-  }
-  return undefined;
+function loadOpenPositions() {
+  return readJson(config.dryRunPositionsPath, []);
 }
 
-function pickFirstDefined(...values) {
-  for (const value of values) {
-    if (value !== undefined && value !== null && value !== "") return value;
-  }
-  return undefined;
+function saveOpenPositions(positions) {
+  writeJson(config.dryRunPositionsPath, positions);
 }
 
-function valuesForPattern(source, pattern) {
-  return Object.keys(source || {})
-    .filter((key) => pattern.test(key))
-    .map((key) => source[key]);
+function loadClosedTrades() {
+  return readJson(config.closedTradesPath, []);
 }
 
-function normalizeTradeStatus(status) {
-  const value = String(status || "OPEN").toUpperCase();
-
-  if (value.includes("TARGET ACHIEVED")) return "TARGET ACHIEVED";
-  if (/^SL\d+$/.test(value) || value === "SL HIT") return "SL HIT";
-  if (value.includes("FORCE CLOSED") || value.includes("MARKET REVERSED")) return "FORCE CLOSED";
-  if (value === "DISABLED" || value === "REMOVED") return "DISABLED";
-  return "OPEN";
+function saveClosedTrades(trades) {
+  writeJson(config.closedTradesPath, trades);
 }
 
 function uniqueStrings(values) {
   return [...new Set((values || []).map((v) => String(v).trim()).filter(Boolean))];
 }
 
-function normalizePosition(position, options = {}) {
-  const normalized = { ...position };
-  const targetPrice =
-    pickFiniteNumber(normalized.targetPrice, ...valuesForPattern(normalized, /^target\d+Price$/)) ?? 0;
-  const stopPrice =
-    pickFiniteNumber(normalized.stopPrice, ...valuesForPattern(normalized, /^sl\d+Price$/)) ?? 0;
-  const pnlStatus = normalizeTradeStatus(
-    pickFirstDefined(normalized.pnlStatus, ...valuesForPattern(normalized, /^pnl\d+Status$/))
-  );
-  const pnlClosedAt =
-    pickFirstDefined(normalized.pnlClosedAt, ...valuesForPattern(normalized, /^pnl\d+ClosedAt$/)) ??
-    null;
-  const pnlExitPrice =
-    pickFiniteNumber(normalized.pnlExitPrice, ...valuesForPattern(normalized, /^pnl\d+ExitPrice$/)) ??
-    null;
-  const pnlPct = round(
-    pickFiniteNumber(normalized.pnlPct, ...valuesForPattern(normalized, /^pnl\d+PnlPct$/)) ?? 0,
-    6
-  );
-  const pnlAmount = round(
-    pickFiniteNumber(normalized.pnlAmount, ...valuesForPattern(normalized, /^pnl\d+PnlAmount$/)) ?? 0,
-    6
-  );
-
-  normalized.targetPrice = targetPrice;
-  normalized.stopPrice = stopPrice;
-  normalized.tp1 = targetPrice;
-
-  normalized.pnlStatus = pnlStatus;
-  normalized.pnlClosedAt = pnlClosedAt;
-  normalized.pnlExitPrice = pnlExitPrice;
-  normalized.pnlPct = pnlPct;
-  normalized.pnlAmount = pnlAmount;
-  normalized.forceCloseReason = normalized.forceCloseReason ?? null;
-  normalized.forceCloseCode = normalized.forceCloseCode ?? null;
-  normalized.forceClosedDirection = normalized.forceClosedDirection ?? null;
-
-  for (const key of Object.keys(normalized)) {
-    if (
-      /^pnl\d+/.test(key) ||
-      /^target\d+Price$/.test(key) ||
-      /^sl\d+Price$/.test(key) ||
-      key === "tp2" ||
-      key === "tp3" ||
-      key === "ignoredTp3" ||
-      key === "ignoredTp4"
-    ) {
-      delete normalized[key];
-    }
-  }
-
-  const existingRealized = round(pickFiniteNumber(normalized.realizedPnl) ?? 0, 6);
-  const closed = options.closed || pnlStatus !== "OPEN";
-
-  if (closed) {
-    normalized.blocksNewSignals = false;
-    normalized.monitoringActive = false;
-    normalized.status = "CLOSED";
-    normalized.closeTime =
-      normalized.closeTime || normalized.closedAt || normalized.pnlClosedAt || null;
-    normalized.closedAt = normalized.closeTime;
-    normalized.realizedPnl = existingRealized || pnlAmount;
-    return normalized;
-  }
-
-  normalized.blocksNewSignals =
-    typeof normalized.blocksNewSignals === "boolean" ? normalized.blocksNewSignals : true;
-  normalized.monitoringActive = normalized.monitoringActive !== false;
-  normalized.status = "OPEN";
-  normalized.realizedPnl = existingRealized;
-
-  return normalized;
-}
-
-function loadOpenPositions() {
-  return readJson(config.dryRunPositionsPath, []).map((position) => normalizePosition(position));
-}
-
-function saveOpenPositions(positions) {
-  writeJson(
-    config.dryRunPositionsPath,
-    (positions || []).map((position) => normalizePosition(position))
-  );
-}
-
-function loadClosedTrades() {
-  return readJson(config.closedTradesPath, []).map((trade) =>
-    normalizePosition(trade, { closed: true })
-  );
-}
-
-function saveClosedTrades(trades) {
-  writeJson(
-    config.closedTradesPath,
-    (trades || []).map((trade) => normalizePosition(trade, { closed: true }))
-  );
+function asDecimalPercent(value) {
+  return Number(value || 0) / 100;
 }
 
 function computeSignedPct(side, entry, exitPrice) {
@@ -150,9 +41,7 @@ function computeSignedAmount(notional, pct) {
 function getSignalKey(signal) {
   return String(
     signal.signalKey ||
-      [signal.pair, signal.side, signal.baseTimeframe]
-        .map((v) => String(v || "").toUpperCase())
-        .join("|")
+      [signal.pair, signal.side, signal.baseTimeframe].map((v) => String(v || "").toUpperCase()).join("|")
   );
 }
 
@@ -160,9 +49,7 @@ function buildStrategyUsed(signal) {
   return (
     signal.strategyUsed ||
     signal.strategySource ||
-    `${signal.strategySourcePair || signal.sourcePair || "N/A"} ${
-      signal.strategySourceTimeframe || signal.sourceTimeframe || ""
-    }`.trim()
+    `${signal.strategySourcePair || signal.sourcePair || "N/A"} ${signal.strategySourceTimeframe || signal.sourceTimeframe || ""}`.trim()
   );
 }
 
@@ -170,10 +57,8 @@ function createPosition(signal) {
   const notional = Number(config.dryRunNotional || 100);
   const entry = Number(signal.entryPrice ?? signal.entry ?? 0);
   const qty = entry > 0 ? notional / entry : 0;
-  const targetPrice = pickFiniteNumber(signal.targetPrice, signal.tp1) ?? 0;
-  const stopPrice = pickFiniteNumber(signal.stopPrice, signal.stopLoss, signal.sl) ?? 0;
 
-  return normalizePosition({
+  return {
     signalId: signal.signalId || `${signal.pair}-${signal.side}-${signal.baseTimeframe}-${Date.now()}`,
     id: signal.signalId || `${signal.pair}-${signal.side}-${signal.baseTimeframe}-${Date.now()}`,
     signalKey: getSignalKey(signal),
@@ -183,12 +68,18 @@ function createPosition(signal) {
     supportTimeframes: uniqueStrings(signal.supportTimeframes || signal.supportTfs || []),
     supportTimeframeCount: uniqueStrings(signal.supportTimeframes || signal.supportTfs || []).length,
     entryPrice: entry,
-    entry,
+    entry: entry,
     quantity: round(qty, 8),
     notional,
-    targetPrice,
-    stopPrice,
-    tp1: targetPrice,
+    target1Price: Number(signal.target1Price),
+    target2Price: Number(signal.target2Price),
+    sl1Price: Number(signal.sl1Price),
+    sl2Price: Number(signal.sl2Price),
+    tp1: Number(signal.target2Price),
+    tp2: Number(signal.ignoredTp3),
+    tp3: Number(signal.ignoredTp4),
+    ignoredTp3: Number(signal.ignoredTp3),
+    ignoredTp4: Number(signal.ignoredTp4),
     originalSystemTp1: Number(signal.originalSystemTp1),
     originalSystemSl: Number(signal.originalSystemSl),
     strategyUsed: buildStrategyUsed(signal),
@@ -198,22 +89,25 @@ function createPosition(signal) {
     messageId: signal.signalMessageId || null,
     openedAt: nowIso(),
     openTime: nowIso(),
+    firstClosedAt: null,
     closeTime: null,
     currentMark: entry,
     unrealizedPnl: 0,
     realizedPnl: 0,
-    pnlStatus: "OPEN",
-    pnlClosedAt: null,
-    pnlExitPrice: null,
-    pnlPct: 0,
-    pnlAmount: 0,
-    forceCloseReason: null,
-    forceCloseCode: null,
-    forceClosedDirection: null,
+    pnl1Status: "OPEN",
+    pnl2Status: "OPEN",
+    pnl1ClosedAt: null,
+    pnl2ClosedAt: null,
+    pnl1ExitPrice: null,
+    pnl2ExitPrice: null,
+    pnl1PnlPct: 0,
+    pnl2PnlPct: 0,
+    pnl1PnlAmount: 0,
+    pnl2PnlAmount: 0,
     blocksNewSignals: true,
     monitoringActive: true,
     status: "OPEN",
-  });
+  };
 }
 
 function updatePositionMark(position, mark) {
@@ -224,11 +118,11 @@ function updatePositionMark(position, mark) {
 }
 
 function isFullyClosed(position) {
-  return normalizeTradeStatus(position.pnlStatus) !== "OPEN";
+  return position.pnl1Status !== "OPEN" && position.pnl2Status !== "OPEN";
 }
 
 function releaseSignalGate(position) {
-  if (position.blocksNewSignals && isFullyClosed(position)) {
+  if (position.blocksNewSignals && (position.pnl1Status !== "OPEN" || position.pnl2Status !== "OPEN")) {
     position.blocksNewSignals = false;
     position.firstClosedAt = position.firstClosedAt || nowIso();
   }
@@ -240,26 +134,35 @@ function refreshOverallStatus(position) {
     position.status = "CLOSED";
     position.closeTime = position.closeTime || nowIso();
     position.closedAt = position.closeTime;
-    position.realizedPnl = round(Number(position.pnlAmount || 0), 6);
+    position.realizedPnl = round((position.pnl1PnlAmount || 0) + (position.pnl2PnlAmount || 0), 6);
+  } else if (position.pnl1Status !== "OPEN" || position.pnl2Status !== "OPEN") {
+    position.status = "PARTIAL";
   } else {
-    position.monitoringActive = true;
     position.status = "OPEN";
   }
   return position;
 }
 
-function markTradeClosed(position, status, exitPrice) {
-  if (normalizeTradeStatus(position.pnlStatus) !== "OPEN") return null;
-
+function markModelClosed(position, model, status, exitPrice) {
   const now = nowIso();
   const pct = computeSignedPct(position.side, position.entryPrice, exitPrice);
   const amount = computeSignedAmount(position.notional, pct);
 
-  position.pnlStatus = status;
-  position.pnlClosedAt = now;
-  position.pnlExitPrice = exitPrice;
-  position.pnlPct = round(pct, 6);
-  position.pnlAmount = amount;
+  if (model === "PNL1") {
+    if (position.pnl1Status !== "OPEN") return null;
+    position.pnl1Status = status;
+    position.pnl1ClosedAt = now;
+    position.pnl1ExitPrice = exitPrice;
+    position.pnl1PnlPct = round(pct, 6);
+    position.pnl1PnlAmount = amount;
+  } else {
+    if (position.pnl2Status !== "OPEN") return null;
+    position.pnl2Status = status;
+    position.pnl2ClosedAt = now;
+    position.pnl2ExitPrice = exitPrice;
+    position.pnl2PnlPct = round(pct, 6);
+    position.pnl2PnlAmount = amount;
+  }
 
   releaseSignalGate(position);
   refreshOverallStatus(position);
@@ -287,20 +190,6 @@ function findExistingTrackedSignal(pair, side, baseTimeframe) {
 
 function canOpenNewSignal() {
   return !loadOpenPositions().some((p) => p.monitoringActive && p.blocksNewSignals);
-}
-
-function getBlockingOpenTrades() {
-  return loadOpenPositions().filter((position) => position.monitoringActive && position.blocksNewSignals);
-}
-
-function findTrackedPosition(positions, identifier) {
-  return positions.find(
-    (position) =>
-      position.signalId === identifier ||
-      position.id === identifier ||
-      position.signalKey === identifier ||
-      position.pair === String(identifier || "").toUpperCase()
-  );
 }
 
 function registerSignal(signal) {
@@ -333,63 +222,6 @@ function attachSignalMessage(signalId, messageId, signalKey) {
   return updated;
 }
 
-function clearOpenTrades() {
-  const openPositions = loadOpenPositions();
-  saveOpenPositions([]);
-
-  return {
-    removedCount: openPositions.length,
-    removedTrades: openPositions,
-    removedSignalKeys: openPositions
-      .map((position) => position.signalKey)
-      .filter(Boolean),
-  };
-}
-
-function clearTradeHistory() {
-  const openPositions = loadOpenPositions();
-  const closedTrades = loadClosedTrades();
-  saveOpenPositions([]);
-  saveClosedTrades([]);
-
-  return {
-    removedOpenCount: openPositions.length,
-    removedClosedCount: closedTrades.length,
-    removedTotalCount: openPositions.length + closedTrades.length,
-  };
-}
-
-function forceCloseTrade(identifier, exitPrice, details = {}) {
-  const openPositions = loadOpenPositions();
-  const closedTrades = loadClosedTrades();
-  const position = findTrackedPosition(openPositions, identifier);
-
-  if (!position) return null;
-
-  const mark = Number.isFinite(Number(exitPrice))
-    ? Number(exitPrice)
-    : Number(position.currentMark || position.entryPrice || position.entry || 0);
-
-  updatePositionMark(position, mark);
-  position.forceCloseReason = details.reasonText || details.reason || null;
-  position.forceCloseCode = details.reasonCode || null;
-  position.forceClosedDirection = details.forceDirection || null;
-
-  const event = markTradeClosed(position, "FORCE CLOSED", mark);
-  if (!event) return null;
-
-  event.reasonText = position.forceCloseReason;
-  event.reasonCode = position.forceCloseCode;
-  event.forceDirection = position.forceClosedDirection;
-
-  const remainingOpen = openPositions.filter((item) => item.signalId !== position.signalId);
-  closedTrades.push({ ...position });
-  saveOpenPositions(remainingOpen);
-  saveClosedTrades(closedTrades);
-
-  return event;
-}
-
 function evaluateTargetsAndStops(priceByPair) {
   const openPositions = loadOpenPositions();
   const stillOpen = [];
@@ -405,17 +237,32 @@ function evaluateTargetsAndStops(priceByPair) {
 
     updatePositionMark(position, mark);
 
-    if (normalizeTradeStatus(position.pnlStatus) === "OPEN") {
-      const targetHit =
-        position.side === "LONG" ? mark >= position.targetPrice : mark <= position.targetPrice;
-      const stopHit =
-        position.side === "LONG" ? mark <= position.stopPrice : mark >= position.stopPrice;
+    if (position.pnl1Status === "OPEN") {
+      const pnl1TargetHit =
+        position.side === "LONG" ? mark >= position.target1Price : mark <= position.target1Price;
+      const pnl1StopHit =
+        position.side === "LONG" ? mark <= position.sl1Price : mark >= position.sl1Price;
 
-      if (targetHit) {
-        const event = markTradeClosed(position, "TARGET ACHIEVED", position.targetPrice);
+      if (pnl1TargetHit) {
+        const event = markModelClosed(position, "PNL1", "TARGET ACHIEVED 1", position.target1Price);
         if (event) updates.push(event);
-      } else if (stopHit) {
-        const event = markTradeClosed(position, "SL HIT", position.stopPrice);
+      } else if (pnl1StopHit) {
+        const event = markModelClosed(position, "PNL1", "SL1", position.sl1Price);
+        if (event) updates.push(event);
+      }
+    }
+
+    if (position.pnl2Status === "OPEN") {
+      const pnl2TargetHit =
+        position.side === "LONG" ? mark >= position.target2Price : mark <= position.target2Price;
+      const pnl2StopHit =
+        position.side === "LONG" ? mark <= position.sl2Price : mark >= position.sl2Price;
+
+      if (pnl2TargetHit) {
+        const event = markModelClosed(position, "PNL2", "TARGET ACHIEVED 2", position.target2Price);
+        if (event) updates.push(event);
+      } else if (pnl2StopHit) {
+        const event = markModelClosed(position, "PNL2", "SL2", position.sl2Price);
         if (event) updates.push(event);
       }
     }
@@ -438,16 +285,17 @@ function getAllTrades() {
   return [...loadOpenPositions(), ...loadClosedTrades()];
 }
 
-function summarizeTrades(trades) {
+function summarizeModel(trades, model) {
+  const targetStatus = model === "pnl1" ? "TARGET ACHIEVED 1" : "TARGET ACHIEVED 2";
+  const stopStatus = model === "pnl1" ? "SL1" : "SL2";
+  const statusField = model === "pnl1" ? "pnl1Status" : "pnl2Status";
+  const pnlField = model === "pnl1" ? "pnl1PnlAmount" : "pnl2PnlAmount";
+
   const totalSignals = trades.length;
-  const targetCount = trades.filter(
-    (trade) => normalizeTradeStatus(trade.pnlStatus) === "TARGET ACHIEVED"
-  ).length;
-  const slCount = trades.filter(
-    (trade) => normalizeTradeStatus(trade.pnlStatus) === "SL HIT"
-  ).length;
+  const targetCount = trades.filter((t) => t[statusField] === targetStatus).length;
+  const slCount = trades.filter((t) => t[statusField] === stopStatus).length;
   const cumulativeProfitLoss = round(
-    trades.reduce((sum, trade) => sum + Number(trade.realizedPnl || trade.pnlAmount || 0), 0),
+    trades.reduce((sum, t) => sum + Number(t[pnlField] || 0), 0),
     6
   );
 
@@ -461,8 +309,8 @@ function summarizeTrades(trades) {
   };
 }
 
-function pnlModelSummary() {
-  return summarizeTrades(getAllTrades());
+function pnlModelSummary(model) {
+  return summarizeModel(getAllTrades(), model);
 }
 
 function pnlSummary() {
@@ -470,22 +318,17 @@ function pnlSummary() {
   const closedTrades = loadClosedTrades();
   const allTrades = [...openPositions, ...closedTrades];
   const blocking = openPositions.filter((p) => p.blocksNewSignals).length;
-  const backgroundMonitoring = openPositions.filter((p) => !p.blocksNewSignals).length;
+  const partiallyMonitoring = openPositions.filter((p) => !p.blocksNewSignals).length;
 
   return {
     openCount: openPositions.length,
     closedCount: closedTrades.length,
     blockingSignals: blocking,
-    backgroundMonitoring,
-    openUnrealized: round(
-      openPositions.reduce((sum, position) => sum + Number(position.unrealizedPnl || 0), 0),
-      6
-    ),
-    realized: round(
-      allTrades.reduce((sum, trade) => sum + Number(trade.realizedPnl || trade.pnlAmount || 0), 0),
-      6
-    ),
-    pnl: summarizeTrades(allTrades),
+    backgroundMonitoring: partiallyMonitoring,
+    openUnrealized: round(openPositions.reduce((sum, p) => sum + Number(p.unrealizedPnl || 0), 0), 6),
+    realized: round(allTrades.reduce((sum, p) => sum + Number(p.pnl1PnlAmount || 0) + Number(p.pnl2PnlAmount || 0), 0), 6),
+    pnl1: summarizeModel(allTrades, "pnl1"),
+    pnl2: summarizeModel(allTrades, "pnl2"),
   };
 }
 
@@ -501,10 +344,6 @@ module.exports = {
   pnlSummary,
   pnlModelSummary,
   canOpenNewSignal,
-  getBlockingOpenTrades,
-  clearOpenTrades,
-  clearTradeHistory,
-  forceCloseTrade,
   findExistingTrackedSignal,
   findExistingOpen: findExistingTrackedSignal,
 };

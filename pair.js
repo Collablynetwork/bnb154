@@ -3,5 +3,5 @@ module.exports = [
   'ETHUSDT',
   'SOLUSDT',
   'BNBUSDT',
-  'XRPUSDT'
+  'HYPEUSDT'
 ];

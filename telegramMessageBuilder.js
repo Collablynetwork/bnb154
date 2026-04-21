@@ -49,12 +49,14 @@ function buildSignalMessage(candidate) {
     `📚 Support TFs (${supportTfs.length}): ${supportTfs.join(", ") || "N/A"}`,
     `🎯 Score: ${formatScore(candidate.score)}`,
     `💵 Entry Price: ${formatPrice(candidate.entry)}`,
-    `✅ Target Price: ${formatPrice(candidate.targetPrice)}`,
-    `❌ Stop Price: ${formatPrice(candidate.stopPrice)}`,
+    `✅ Target Price (Adjusted TP1): ${formatPrice(candidate.target2Price ?? candidate.target1Price)}`,
+    `❌ Stop Loss (Adjusted SL): ${formatPrice(candidate.sl2Price ?? candidate.sl1Price)}`,
+    `📌 TP3 (ignored in stats): ${formatPrice(candidate.ignoredTp3)}`,
+    `📌 TP4 (ignored in stats): ${formatPrice(candidate.ignoredTp4)}`,
     `⚖️ Risk/Reward: ${formatRatio(candidate.riskReward)}`,
     `🧠 Strategy Source: ${candidate.strategyUsed || candidate.strategySource || "N/A"}`,
     reasons.length ? `✅ Conditions: ${reasons.join(" | ")}` : "✅ Conditions: Matched learned setup",
-    `ℹ️ Performance uses the target and stop shown above.`,
+    `ℹ️ Performance uses only final PNL target and final stop loss. Legacy PNL1 is removed.`,
   ].join("\n");
 }
 
@@ -62,7 +64,7 @@ function buildSignalReplyMarkup(candidate) {
   return {
     inline_keyboard: [[
       {
-        text: "Open Futures Contract",
+        text: "📈 Open on Binance",
         url: buildBinancePairLink(candidate.pair),
       },
     ]],
@@ -79,13 +81,12 @@ function buildScoreRisingMessage({ pair, baseTf, oldScore, newScore, updates = [
 }
 
 function buildTargetHitMessage(position) {
-  const title = "🎯 TARGET ACHIEVED";
-  const targetPrice = position.targetPrice;
-  const pnlAmount = position.pnlAmount;
-  const pnlPct = position.pnlPct;
+  const targetPrice = position.target2Price ?? position.target1Price;
+  const pnlAmount = position.pnl2PnlAmount ?? position.pnl1PnlAmount;
+  const pnlPct = position.pnl2PnlPct ?? position.pnl1PnlPct;
 
   return [
-    title,
+    "✅ TARGET ACHIEVED",
     `🪙 Pair: ${position.pair}`,
     `📍 Side: ${position.side}`,
     `⏱ Base TF: ${position.baseTimeframe}`,
@@ -97,13 +98,12 @@ function buildTargetHitMessage(position) {
 }
 
 function buildStopHitMessage(position) {
-  const title = "❌ STOP LOSS HIT";
-  const stopPrice = position.stopPrice;
-  const pnlAmount = position.pnlAmount;
-  const pnlPct = position.pnlPct;
+  const stopPrice = position.sl2Price ?? position.sl1Price;
+  const pnlAmount = position.pnl2PnlAmount ?? position.pnl1PnlAmount;
+  const pnlPct = position.pnl2PnlPct ?? position.pnl1PnlPct;
 
   return [
-    title,
+    "❌ STOP LOSS HIT",
     `🪙 Pair: ${position.pair}`,
     `📍 Side: ${position.side}`,
     `⏱ Base TF: ${position.baseTimeframe}`,
@@ -114,19 +114,6 @@ function buildStopHitMessage(position) {
   ].join("\n");
 }
 
-function buildForceClosedMessage(position) {
-  return [
-    "⚠️ SIGNAL CLOSED FORCEFULLY",
-    `🪙 Pair: ${position.pair}`,
-    `📍 Side: ${position.side}`,
-    `⏱ Base TF: ${position.baseTimeframe}`,
-    `💵 Entry: ${formatPrice(position.entryPrice || position.entry)}`,
-    `📌 Exit Mark: ${formatPrice(position.currentMark)}`,
-    `💹 PNL: ${formatPrice(position.pnlAmount)} (${formatPct(position.pnlPct)})`,
-    `📝 Reason: ${position.forceCloseReason || "Internal market breadth reversed."}`,
-  ].join("\n");
-}
-
 module.exports = {
   buildBinancePairLink,
   buildSignalMessage,
@@ -134,5 +121,4 @@ module.exports = {
   buildScoreRisingMessage,
   buildTargetHitMessage,
   buildStopHitMessage,
-  buildForceClosedMessage,
 };
